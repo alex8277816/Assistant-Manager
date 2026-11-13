@@ -1,0 +1,171 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: default deny all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Hardened Global Helpers
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    // Validation Helper: UserVault
+    function isValidUserVault(data, userId) {
+      return data.keys().hasAll([
+          'ownerId', 'vaultSalt', 'vaultCheckCipher', 'vaultCheckIv',
+          'themeMode', 'themeAccent', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'vaultSalt', 'vaultCheckCipher', 'vaultCheckIv',
+          'themeMode', 'themeAccent', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == userId
+        && data.ownerId == request.auth.uid
+        && data.vaultSalt is string && data.vaultSalt.size() >= 8 && data.vaultSalt.size() <= 128
+        && data.vaultCheckCipher is string && data.vaultCheckCipher.size() >= 16 && data.vaultCheckCipher.size() <= 512
+        && data.vaultCheckIv is string && data.vaultCheckIv.size() >= 8 && data.vaultCheckIv.size() <= 64
+        && data.themeMode in ['light', 'dark', 'system']
+        && data.themeAccent in ['teal', 'indigo', 'emerald', 'amber', 'rose']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Validation Helper: EncryptedSyncItem
+    function isValidEncryptedSyncItem(data, userId) {
+      return data.keys().hasAll([
+          'ownerId', 'kind', 'ciphertext', 'iv',
+          'version', 'deleted', 'clientUpdatedAt', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'kind', 'ciphertext', 'iv',
+          'version', 'deleted', 'clientUpdatedAt', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == userId
+        && data.ownerId == request.auth.uid
+        && data.kind in ['task', 'memo', 'plugin', 'card']
+        && data.ciphertext is string && data.ciphertext.size() >= 16 && data.ciphertext.size() <= 200000
+        && data.iv is string && data.iv.size() >= 8 && data.iv.size() <= 64
+        && data.version is int && data.version >= 1 && data.version <= 1000000
+        && data.deleted is bool
+        && data.clientUpdatedAt is number && data.clientUpdatedAt >= 0
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Validation Helper: EncryptedBackupSnapshot
+    function isValidBackupSnapshot(data, userId) {
+      return data.keys().hasAll([
+          'ownerId', 'label', 'itemCount', 'ciphertext', 'iv', 'salt', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'label', 'itemCount', 'ciphertext', 'iv', 'salt', 'createdAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == userId
+        && data.ownerId == request.auth.uid
+        && data.label is string && data.label.size() >= 1 && data.label.size() <= 120
+        && data.itemCount is int && data.itemCount >= 0 && data.itemCount <= 50000
+        && data.ciphertext is string && data.ciphertext.size() >= 16 && data.ciphertext.size() <= 900000
+        && data.iv is string && data.iv.size() >= 8 && data.iv.size() <= 64
+        && data.salt is string && data.salt.size() >= 8 && data.salt.size() <= 128
+        && data.createdAt is timestamp;
+    }
+
+    // User Vault Document
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow list: if false;
+      allow create: if isValidId(userId)
+        && isOwner(userId)
+        && isValidUserVault(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(userId)
+        && isOwner(userId)
+        && isValidUserVault(incoming(), userId)
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action: Update Theme Preferences
+          incoming().diff(existing()).affectedKeys().hasOnly(['themeMode', 'themeAccent', 'updatedAt'])
+          // Action: Rotate Vault Key Check
+          || incoming().diff(existing()).affectedKeys().hasOnly(['vaultSalt', 'vaultCheckCipher', 'vaultCheckIv', 'updatedAt'])
+        );
+      allow delete: if false;
+
+      // Encrypted Sync Items (tasks, memos, plugins, business cards)
+      match /items/{itemId} {
+        allow get: if isValidId(userId) && isValidId(itemId) && isOwner(userId)
+          && existing().ownerId == request.auth.uid;
+        allow list: if isValidId(userId) && isOwner(userId)
+          && resource.data.ownerId == request.auth.uid;
+        allow create: if isValidId(userId) && isValidId(itemId)
+          && isOwner(userId)
+          && exists(/databases/$(database)/documents/users/$(userId))
+          && isValidEncryptedSyncItem(incoming(), userId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isValidId(userId) && isValidId(itemId)
+          && isOwner(userId)
+          && existing().ownerId == request.auth.uid
+          && isValidEncryptedSyncItem(incoming(), userId)
+          && incoming().ownerId == existing().ownerId
+          && incoming().kind == existing().kind
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().version >= existing().version
+          && (
+            // Action: Sync Encrypted Payload Update
+            incoming().diff(existing()).affectedKeys().hasOnly(['ciphertext', 'iv', 'version', 'deleted', 'clientUpdatedAt', 'updatedAt'])
+          );
+        allow delete: if isValidId(userId) && isValidId(itemId)
+          && isOwner(userId)
+          && existing().ownerId == request.auth.uid;
+      }
+
+      // Encrypted Cloud Backup Snapshots
+      match /backups/{backupId} {
+        allow get: if isValidId(userId) && isValidId(backupId) && isOwner(userId)
+          && existing().ownerId == request.auth.uid;
+        allow list: if isValidId(userId) && isOwner(userId)
+          && resource.data.ownerId == request.auth.uid;
+        allow create: if isValidId(userId) && isValidId(backupId)
+          && isOwner(userId)
+          && exists(/databases/$(database)/documents/users/$(userId))
+          && isValidBackupSnapshot(incoming(), userId)
+          && incoming().createdAt == request.time;
+        allow update: if false;
+        allow delete: if isValidId(userId) && isValidId(backupId)
+          && isOwner(userId)
+          && existing().ownerId == request.auth.uid;
+      }
+    }
+  }
+}

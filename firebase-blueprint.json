@@ -1,0 +1,200 @@
+{
+  "entities": {
+    "UserVault": {
+      "title": "UserVault",
+      "description": "End-to-end encrypted vault metadata and synced theme settings for a user.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the vault owner."
+        },
+        "vaultSalt": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 128,
+          "description": "Base64 PBKDF2 salt for client-side key derivation."
+        },
+        "vaultCheckCipher": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 512,
+          "description": "AES-GCM encrypted verification token to validate passphrase locally."
+        },
+        "vaultCheckIv": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 64,
+          "description": "Base64 AES-GCM IV for the verification token."
+        },
+        "themeMode": {
+          "type": "string",
+          "enum": ["light", "dark", "system"],
+          "description": "Preferred UI color mode."
+        },
+        "themeAccent": {
+          "type": "string",
+          "enum": ["teal", "indigo", "emerald", "amber", "rose"],
+          "description": "Preferred custom accent theme."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "ownerId",
+        "vaultSalt",
+        "vaultCheckCipher",
+        "vaultCheckIv",
+        "themeMode",
+        "themeAccent",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "EncryptedSyncItem": {
+      "title": "EncryptedSyncItem",
+      "description": "Zero-knowledge AES-GCM encrypted task, memo, plugin workflow configuration, or business card.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the item owner."
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["task", "memo", "plugin", "card"],
+          "description": "Record type for client synchronization routing."
+        },
+        "ciphertext": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 200000,
+          "description": "Base64 AES-GCM encrypted JSON payload."
+        },
+        "iv": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 64,
+          "description": "Base64 AES-GCM initialization vector."
+        },
+        "version": {
+          "type": "integer",
+          "description": "Monotonic sync revision counter."
+        },
+        "deleted": {
+          "type": "boolean",
+          "description": "Soft-delete tombstone flag for offline-first sync."
+        },
+        "clientUpdatedAt": {
+          "type": "number",
+          "description": "Client modification epoch milliseconds."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "ownerId",
+        "kind",
+        "ciphertext",
+        "iv",
+        "version",
+        "deleted",
+        "clientUpdatedAt",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "EncryptedBackupSnapshot": {
+      "title": "EncryptedBackupSnapshot",
+      "description": "Point-in-time full E2EE cloud backup snapshot for cross-device restoration.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the backup owner."
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Human-readable backup label."
+        },
+        "itemCount": {
+          "type": "integer",
+          "description": "Number of items included in this snapshot."
+        },
+        "ciphertext": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 900000,
+          "description": "Base64 AES-GCM encrypted full backup archive."
+        },
+        "iv": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 64,
+          "description": "Base64 AES-GCM initialization vector."
+        },
+        "salt": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 128,
+          "description": "Base64 PBKDF2 salt used to encrypt this snapshot."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        }
+      },
+      "required": [
+        "ownerId",
+        "label",
+        "itemCount",
+        "ciphertext",
+        "iv",
+        "salt",
+        "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserVault" },
+      "description": "Per-user E2EE vault parameters and theme preferences."
+    },
+    "/users/{userId}/items/{itemId}": {
+      "schema": { "$ref": "#/entities/EncryptedSyncItem" },
+      "description": "Per-user encrypted tasks, memos, plugin states, and business cards."
+    },
+    "/users/{userId}/backups/{backupId}": {
+      "schema": { "$ref": "#/entities/EncryptedBackupSnapshot" },
+      "description": "Per-user point-in-time encrypted cloud backup snapshots."
+    }
+  }
+}

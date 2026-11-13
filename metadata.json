@@ -1,0 +1,6 @@
+{
+  "name": "Kairo 隨行助理",
+  "description": "跨平台端對端加密個人助理：整合智慧任務排序、每日排程、加密備忘錄、行事曆同步、語音自動提醒、雲端備份與第三方插件擴充。",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

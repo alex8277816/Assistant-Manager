@@ -50,9 +50,12 @@ interface SettingsBackupViewProps {
   isSpeaking: boolean;
   cloudBackups: CloudBackupRecord[];
   syncStatusText: string;
+  pendingSyncCount: number;
+  syncingNow: boolean;
   sampleCipherPreview: { ciphertext: string; iv: string } | null;
   onGoogleSignIn: () => Promise<void>;
   onGoogleSignOut: () => Promise<void>;
+  onSyncNow: () => Promise<void>;
   onSetupOrUnlockVault: (passphrase: string) => Promise<boolean>;
   onLockVault: () => void;
   onCreateCloudBackup: (label: string) => Promise<void>;
@@ -91,9 +94,12 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
   isSpeaking,
   cloudBackups,
   syncStatusText,
+  pendingSyncCount,
+  syncingNow,
   sampleCipherPreview,
   onGoogleSignIn,
   onGoogleSignOut,
+  onSyncNow,
   onSetupOrUnlockVault,
   onLockVault,
   onCreateCloudBackup,
@@ -329,17 +335,29 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
               <Cloud className="w-4 h-4 accent-text" />
               <span>跨平台雲端同步與設備還原備份</span>
             </h2>
-            <p className="text-xs text-stone-600 dark:text-zinc-400 mt-1">
+            <p className="text-xs text-stone-600 dark:text-zinc-400 mt-1 tabular-nums">
               {syncStatusText}
+              {pendingSyncCount > 0 && ` · 待同步項目 ${pendingSyncCount} 筆`}
             </p>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
             {user ? (
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-2.5">
                 <span className="text-xs text-stone-600 dark:text-zinc-300 truncate max-w-[200px]">
                   {user.email || user.displayName}
                 </span>
+                {vault.unlocked && (
+                  <button
+                    type="button"
+                    disabled={syncingNow}
+                    onClick={() => onSyncNow()}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 dark:border-zinc-700 px-3.5 py-2 text-xs font-medium hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[40px] disabled:opacity-60"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 accent-text ${syncingNow ? 'animate-spin' : ''}`} />
+                    <span>{syncingNow ? '同步中...' : '立即雙向同步'}</span>
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={onGoogleSignOut}

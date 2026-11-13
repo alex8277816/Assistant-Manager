@@ -50,6 +50,7 @@ import {
   subscribeAuth,
   subscribeCalendarToken,
   subscribeEncryptedSyncItems,
+  subscribeUserVaultMeta,
   updateRemoteThemePrefs,
   upsertUserVaultMeta,
 } from './services/firebaseSync';
@@ -79,6 +80,7 @@ import {
   type EncryptedArchiveFile,
 } from './utils/cryptoVault';
 import { parseQuickTaskInput } from './utils/smartEngine';
+import { findItemsNeedingPush, mergeSyncedCollection } from './utils/syncMerge';
 import { applyWorkflowPlugins } from './utils/pluginEngine';
 import {
   buildReminderTriggerKey,
@@ -139,6 +141,23 @@ export default function App() {
   const lastAnnouncedGovKeyRef = useRef<string>('');
   const todayDigestShownRef = useRef<string>('');
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
+  const [syncingNow, setSyncingNow] = useState(false);
+
+  const tabIdRef = useRef<string>(`tab-${Math.random().toString(36).slice(2, 10)}`);
+  const suppressBroadcastRef = useRef(false);
+  const remoteSnapshotRef = useRef<{
+    tasks: TaskItem[];
+    memos: MemoItem[];
+    plugins: WorkflowPlugin[];
+    cards: BusinessCardItem[];
+  }>({ tasks: [], memos: [], plugins: [], cards: [] });
+  const latestCollectionsRef = useRef({
+    tasks,
+    memos,
+    plugins,
+    businessCards,
+  });
+  latestCollectionsRef.current = { tasks, memos, plugins, businessCards };
 
   // Runtime non-persisted state
   const [cryptoKey, setCryptoKey] = useState<CryptoKey | null>(null);
@@ -216,16 +235,41 @@ export default function App() {
     });
     const unsubSpeak = subscribeSpeakingState((s) => setIsSpeaking(s.isSpeaking));
     const unsubCalToken = subscribeCalendarToken((t) => setGoogleCalendarToken(t));
+
+    // Same-device cross-tab / installed PWA window sync via BroadcastChannel
+    let channel: BroadcastChannel | null = null;
+    if (typeof BroadcastChannel !== 'undefined') {
+      channel = new BroadcastChannel('kairo-workspace-sync');
+      channel.onmessage = (event) => {
+        if (!event.data || event.data.senderId === tabIdRef.current) return;
+        loadWorkspaceFromOffline().then((ws) => {
+          suppressBroadcastRef.current = true;
+          setTasks(ws.tasks);
+          setMemos(ws.memos);
+          setPlugins(ws.plugins);
+          setBusinessCards(ws.businessCards || []);
+          setTheme(ws.theme);
+          setVoice(ws.voice);
+          if (ws.govSettings) setGovSettings(ws.govSettings);
+          if (ws.govCache) setGovCache(ws.govCache);
+          setLastSyncedAt(ws.lastSyncedAt);
+        }).catch(() => {});
+      };
+    }
+
     return () => {
       active = false;
       unsubSpeak();
       unsubCalToken();
+      channel?.close();
     };
   }, []);
 
   // 2. Persist workspace to IndexedDB whenever state changes
   useEffect(() => {
     if (!loaded) return;
+    const shouldBroadcast = !suppressBroadcastRef.current;
+    suppressBroadcastRef.current = false;
     saveWorkspaceToOffline({
       tasks,
       memos,
@@ -237,7 +281,15 @@ export default function App() {
       govSettings,
       govCache,
       lastSyncedAt,
-    }).catch(() => {});
+    })
+      .then(() => {
+        if (shouldBroadcast && typeof BroadcastChannel !== 'undefined') {
+          const bc = new BroadcastChannel('kairo-workspace-sync');
+          bc.postMessage({ senderId: tabIdRef.current, updatedAt: Date.now() });
+          bc.close();
+        }
+      })
+      .catch(() => {});
   }, [loaded, tasks, memos, plugins, businessCards, theme, voice, vault, govSettings, govCache, lastSyncedAt]);
 
   // 3. Apply Dark Mode & Custom Accent Theme to <html>
@@ -281,6 +333,13 @@ export default function App() {
               checkCipher: remoteMeta.vaultCheckCipher,
               checkIv: remoteMeta.vaultCheckIv,
             }));
+            if (remoteMeta.themeMode && remoteMeta.themeAccent) {
+              setTheme((prev) =>
+                prev.mode === remoteMeta.themeMode && prev.accent === remoteMeta.themeAccent
+                  ? prev
+                  : { mode: remoteMeta.themeMode, accent: remoteMeta.themeAccent }
+              );
+            }
           }
           const backups = await listCloudBackupSnapshots(nextUser.uid);
           setCloudBackups(backups);
@@ -294,54 +353,116 @@ export default function App() {
     return () => unsub();
   }, []);
 
+  // 5b. Subscribe real-time remote user theme & vault metadata across devices
+  useEffect(() => {
+    if (!user) return;
+    return subscribeUserVaultMeta(user.uid, (remoteMeta) => {
+      setVault((prev) => ({
+        ...prev,
+        initialized: true,
+        salt: remoteMeta.vaultSalt,
+        checkCipher: remoteMeta.vaultCheckCipher,
+        checkIv: remoteMeta.vaultCheckIv,
+      }));
+      if (remoteMeta.themeMode && remoteMeta.themeAccent) {
+        setTheme((prev) =>
+          prev.mode === remoteMeta.themeMode && prev.accent === remoteMeta.themeAccent
+            ? prev
+            : { mode: remoteMeta.themeMode, accent: remoteMeta.themeAccent }
+        );
+      }
+    });
+  }, [user]);
+
+  const flushPendingItemsToCloud = useCallback(
+    async (
+      targetUser: User,
+      targetKey: CryptoKey,
+      overrideSnapshot?: {
+        tasks?: TaskItem[];
+        memos?: MemoItem[];
+        plugins?: WorkflowPlugin[];
+        cards?: BusinessCardItem[];
+      }
+    ) => {
+      const current = latestCollectionsRef.current;
+      const remote = remoteSnapshotRef.current;
+      const pushTasks = findItemsNeedingPush(overrideSnapshot?.tasks ?? current.tasks, remote.tasks);
+      const pushMemos = findItemsNeedingPush(overrideSnapshot?.memos ?? current.memos, remote.memos);
+      const pushPlugins = findItemsNeedingPush(overrideSnapshot?.plugins ?? current.plugins, remote.plugins);
+      const pushCards = findItemsNeedingPush(overrideSnapshot?.cards ?? current.businessCards, remote.cards);
+
+      const totalToPush = pushTasks.length + pushMemos.length + pushPlugins.length + pushCards.length;
+      if (totalToPush === 0) return 0;
+
+      setSyncingNow(true);
+      try {
+        for (const t of pushTasks) await pushEncryptedSyncItem(targetUser.uid, targetKey, 'task', t);
+        for (const m of pushMemos) await pushEncryptedSyncItem(targetUser.uid, targetKey, 'memo', m);
+        for (const p of pushPlugins) await pushEncryptedSyncItem(targetUser.uid, targetKey, 'plugin', p);
+        for (const c of pushCards) await pushEncryptedSyncItem(targetUser.uid, targetKey, 'card', c);
+
+        const pushedTaskIds = new Set(pushTasks.map((t) => t.id));
+        const pushedMemoIds = new Set(pushMemos.map((m) => m.id));
+        const pushedPluginIds = new Set(pushPlugins.map((p) => p.id));
+        const pushedCardIds = new Set(pushCards.map((c) => c.id));
+
+        if (pushedTaskIds.size > 0) {
+          setTasks((prev) => prev.map((t) => (pushedTaskIds.has(t.id) ? { ...t, syncStatus: 'synced' } : t)));
+        }
+        if (pushedMemoIds.size > 0) {
+          setMemos((prev) => prev.map((m) => (pushedMemoIds.has(m.id) ? { ...m, syncStatus: 'synced' } : m)));
+        }
+        if (pushedPluginIds.size > 0) {
+          setPlugins((prev) => prev.map((p) => (pushedPluginIds.has(p.id) ? { ...p, syncStatus: 'synced' } : p)));
+        }
+        if (pushedCardIds.size > 0) {
+          setBusinessCards((prev) => prev.map((c) => (pushedCardIds.has(c.id) ? { ...c, syncStatus: 'synced' } : c)));
+        }
+        setLastSyncedAt(Date.now());
+        return totalToPush;
+      } finally {
+        setSyncingNow(false);
+      }
+    },
+    []
+  );
+
   // 6. Subscribe E2EE Firestore Sync when authenticated AND vault unlocked
   useEffect(() => {
     if (!user || !cryptoKey) return;
     const unsub = subscribeEncryptedSyncItems(user.uid, cryptoKey, (batch) => {
-      setTasks((prev) => {
-        const map = new Map<string, TaskItem>(prev.map((t) => [t.id, t]));
-        for (const rt of batch.tasks) {
-          const local = map.get(rt.id);
-          if (!local || rt.updatedAt >= local.updatedAt) {
-            map.set(rt.id, rt);
-          }
-        }
-        return Array.from(map.values());
-      });
-      setMemos((prev) => {
-        const map = new Map<string, MemoItem>(prev.map((m) => [m.id, m]));
-        for (const rm of batch.memos) {
-          const local = map.get(rm.id);
-          if (!local || rm.updatedAt >= local.updatedAt) {
-            map.set(rm.id, rm);
-          }
-        }
-        return Array.from(map.values());
-      });
-      setPlugins((prev) => {
-        const map = new Map<string, WorkflowPlugin>(prev.map((p) => [p.id, p]));
-        for (const rp of batch.plugins) {
-          const local = map.get(rp.id);
-          if (!local || rp.updatedAt >= local.updatedAt) {
-            map.set(rp.id, rp);
-          }
-        }
-        return Array.from(map.values());
-      });
-      setBusinessCards((prev) => {
-        const map = new Map<string, BusinessCardItem>(prev.map((c) => [c.id, c]));
-        for (const rc of batch.cards) {
-          const local = map.get(rc.id);
-          if (!local || rc.updatedAt >= local.updatedAt) {
-            map.set(rc.id, rc);
-          }
-        }
-        return Array.from(map.values());
-      });
+      remoteSnapshotRef.current = batch;
+      const current = latestCollectionsRef.current;
+
+      setTasks((prev) => mergeSyncedCollection(prev, batch.tasks));
+      setMemos((prev) => mergeSyncedCollection(prev, batch.memos));
+      setPlugins((prev) => mergeSyncedCollection(prev, batch.plugins));
+      setBusinessCards((prev) => mergeSyncedCollection(prev, batch.cards));
       setLastSyncedAt(Date.now());
+
+      // Automatically push any local offline edits or new items not yet on remote
+      const pendingTasks = findItemsNeedingPush(current.tasks, batch.tasks);
+      const pendingMemos = findItemsNeedingPush(current.memos, batch.memos);
+      const pendingPlugins = findItemsNeedingPush(current.plugins, batch.plugins);
+      const pendingCards = findItemsNeedingPush(current.businessCards, batch.cards);
+      if (
+        pendingTasks.length + pendingMemos.length + pendingPlugins.length + pendingCards.length > 0
+      ) {
+        flushPendingItemsToCloud(user, cryptoKey).catch(() => {});
+      }
     });
-    return () => unsub();
-  }, [user, cryptoKey]);
+
+    const handleOnline = () => {
+      flushPendingItemsToCloud(user, cryptoKey).catch(() => {});
+    };
+    window.addEventListener('online', handleOnline);
+
+    return () => {
+      unsub();
+      window.removeEventListener('online', handleOnline);
+    };
+  }, [user, cryptoKey, flushPendingItemsToCloud]);
 
   const syncSingleItemToCloud = useCallback(
     async (
@@ -351,6 +472,15 @@ export default function App() {
       if (!user || !cryptoKey) return;
       try {
         await pushEncryptedSyncItem(user.uid, cryptoKey, kind, item);
+        if (kind === 'task') {
+          setTasks((prev) => prev.map((t) => (t.id === item.id ? { ...t, syncStatus: 'synced' } : t)));
+        } else if (kind === 'memo') {
+          setMemos((prev) => prev.map((m) => (m.id === item.id ? { ...m, syncStatus: 'synced' } : m)));
+        } else if (kind === 'plugin') {
+          setPlugins((prev) => prev.map((p) => (p.id === item.id ? { ...p, syncStatus: 'synced' } : p)));
+        } else if (kind === 'card') {
+          setBusinessCards((prev) => prev.map((c) => (c.id === item.id ? { ...c, syncStatus: 'synced' } : c)));
+        }
         setLastSyncedAt(Date.now());
       } catch {
         // Keep local item as pending; offline-first guarantees zero data loss
@@ -1077,12 +1207,33 @@ export default function App() {
         theme?: ThemeSettings;
         voice?: VoiceSettings;
       }>(pwd, backup);
-      if (Array.isArray(restored.tasks)) setTasks(restored.tasks);
-      if (Array.isArray(restored.memos)) setMemos(restored.memos);
-      if (Array.isArray(restored.plugins)) setPlugins(restored.plugins);
-      if (Array.isArray(restored.businessCards)) setBusinessCards(restored.businessCards);
+      const restoredTasks = Array.isArray(restored.tasks)
+        ? restored.tasks.map((t) => ({ ...t, updatedAt: Math.max(t.updatedAt, Date.now()), syncStatus: 'pending' as const }))
+        : undefined;
+      const restoredMemos = Array.isArray(restored.memos)
+        ? restored.memos.map((m) => ({ ...m, updatedAt: Math.max(m.updatedAt, Date.now()), syncStatus: 'pending' as const }))
+        : undefined;
+      const restoredPlugins = Array.isArray(restored.plugins)
+        ? restored.plugins.map((p) => ({ ...p, updatedAt: Math.max(p.updatedAt, Date.now()), syncStatus: 'pending' as const }))
+        : undefined;
+      const restoredCards = Array.isArray(restored.businessCards)
+        ? restored.businessCards.map((c) => ({ ...c, updatedAt: Math.max(c.updatedAt, Date.now()), syncStatus: 'pending' as const }))
+        : undefined;
+
+      if (restoredTasks) setTasks(restoredTasks);
+      if (restoredMemos) setMemos(restoredMemos);
+      if (restoredPlugins) setPlugins(restoredPlugins);
+      if (restoredCards) setBusinessCards(restoredCards);
       if (restored.theme) setTheme(restored.theme);
       if (restored.voice) setVoice(restored.voice);
+      if (user && cryptoKey) {
+        flushPendingItemsToCloud(user, cryptoKey, {
+          tasks: restoredTasks,
+          memos: restoredMemos,
+          plugins: restoredPlugins,
+          cards: restoredCards,
+        }).catch(() => {});
+      }
       showToast(`已從雲端備份「${backup.label}」還原所有資料`);
       return true;
     } catch {
@@ -1118,12 +1269,33 @@ export default function App() {
         theme?: ThemeSettings;
         voice?: VoiceSettings;
       }>(passphrase, archive);
-      if (Array.isArray(restored.tasks)) setTasks(restored.tasks);
-      if (Array.isArray(restored.memos)) setMemos(restored.memos);
-      if (Array.isArray(restored.plugins)) setPlugins(restored.plugins);
-      if (Array.isArray(restored.businessCards)) setBusinessCards(restored.businessCards);
+      const restoredTasks = Array.isArray(restored.tasks)
+        ? restored.tasks.map((t) => ({ ...t, updatedAt: Math.max(t.updatedAt, Date.now()), syncStatus: 'pending' as const }))
+        : undefined;
+      const restoredMemos = Array.isArray(restored.memos)
+        ? restored.memos.map((m) => ({ ...m, updatedAt: Math.max(m.updatedAt, Date.now()), syncStatus: 'pending' as const }))
+        : undefined;
+      const restoredPlugins = Array.isArray(restored.plugins)
+        ? restored.plugins.map((p) => ({ ...p, updatedAt: Math.max(p.updatedAt, Date.now()), syncStatus: 'pending' as const }))
+        : undefined;
+      const restoredCards = Array.isArray(restored.businessCards)
+        ? restored.businessCards.map((c) => ({ ...c, updatedAt: Math.max(c.updatedAt, Date.now()), syncStatus: 'pending' as const }))
+        : undefined;
+
+      if (restoredTasks) setTasks(restoredTasks);
+      if (restoredMemos) setMemos(restoredMemos);
+      if (restoredPlugins) setPlugins(restoredPlugins);
+      if (restoredCards) setBusinessCards(restoredCards);
       if (restored.theme) setTheme(restored.theme);
       if (restored.voice) setVoice(restored.voice);
+      if (user && cryptoKey) {
+        flushPendingItemsToCloud(user, cryptoKey, {
+          tasks: restoredTasks,
+          memos: restoredMemos,
+          plugins: restoredPlugins,
+          cards: restoredCards,
+        }).catch(() => {});
+      }
       return true;
     } catch {
       return false;
@@ -1237,12 +1409,16 @@ export default function App() {
         <div className="p-4 border-t border-stone-200 dark:border-zinc-800 space-y-2.5">
           <button
             type="button"
-            onClick={() =>
+            onClick={() => {
+              const nextMode = document.documentElement.classList.contains('dark') ? 'light' : 'dark';
               setTheme((prev) => ({
                 ...prev,
-                mode: document.documentElement.classList.contains('dark') ? 'light' : 'dark',
-              }))
-            }
+                mode: nextMode,
+              }));
+              if (user) {
+                updateRemoteThemePrefs(user.uid, nextMode, theme.accent).catch(() => {});
+              }
+            }}
             className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl border border-stone-200 dark:border-zinc-700 text-xs font-medium text-stone-700 dark:text-zinc-300 hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[42px]"
           >
             <span>切換日 / 夜間外觀</span>
@@ -1591,7 +1767,19 @@ export default function App() {
                     : `已登入 ${user.email}，請輸入上方金鑰密碼以解鎖雲端同步`
                   : '目前為純離線本機儲存模式，登入 Google 帳號即可啟用跨平台加密同步。'
               }
+              pendingSyncCount={
+                tasks.filter((t) => t.syncStatus === 'pending').length +
+                memos.filter((m) => m.syncStatus === 'pending').length +
+                plugins.filter((p) => p.syncStatus === 'pending').length +
+                businessCards.filter((c) => c.syncStatus === 'pending').length
+              }
+              syncingNow={syncingNow}
               sampleCipherPreview={sampleCipherPreview}
+              onSyncNow={async () => {
+                if (!user || !cryptoKey) return;
+                const count = await flushPendingItemsToCloud(user, cryptoKey);
+                showToast(count > 0 ? `已完成 ${count} 筆資料跨平台同步` : '所有裝置資料皆已是最新同步狀態');
+              }}
               onGoogleSignIn={async () => {
                 setAuthLoading(true);
                 try {

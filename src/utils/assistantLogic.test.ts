@@ -28,6 +28,11 @@ import {
   verifyVaultCheck,
 } from './cryptoVault';
 import { computeDayTaskAnalytics, resolveTaskTypeLabel } from './taskAnalytics';
+import {
+  findItemsNeedingPush,
+  mergeSyncedCollection,
+  SEED_BASE_TIMESTAMP,
+} from './syncMerge';
 import type { MemoItem, TaskItem, WorkflowPlugin } from '../types/assistant';
 
 const BASE_DATE = '2026-11-12';
@@ -310,5 +315,54 @@ test('taskAnalytics computes completion rate and task type distribution accurate
   assert.equal(emptyResult.total, 0);
   assert.equal(emptyResult.completionRate, 0);
   assert.equal(emptyResult.completionSlices.length, 0);
+});
+
+test('syncMerge converges cross-platform edits via LWW and avoids pushing untouched seeds over populated cloud', () => {
+  const untouchedSeed = makeTask({
+    id: 'seed-task-1',
+    title: '初始範本',
+    updatedAt: SEED_BASE_TIMESTAMP,
+    syncStatus: 'local',
+  });
+  const remoteEditedSeed = makeTask({
+    id: 'seed-task-1',
+    title: '手機修改後的標題',
+    updatedAt: SEED_BASE_TIMESTAMP + 50000,
+    syncStatus: 'synced',
+  });
+  const localOfflineNew = makeTask({
+    id: 'task-offline-1',
+    title: '電腦離線新增',
+    updatedAt: SEED_BASE_TIMESTAMP + 80000,
+    syncStatus: 'pending',
+  });
+
+  const merged = mergeSyncedCollection(
+    [untouchedSeed, localOfflineNew],
+    [remoteEditedSeed]
+  );
+  assert.equal(merged.length, 2);
+  assert.equal(merged.find((t) => t.id === 'seed-task-1')?.title, '手機修改後的標題');
+  assert.equal(merged.find((t) => t.id === 'seed-task-1')?.syncStatus, 'synced');
+  assert.equal(merged.find((t) => t.id === 'task-offline-1')?.syncStatus, 'pending');
+
+  // Untouched seed-task-2 on a second device should NOT be pushed when cloud already has tasks
+  const untouchedSeed2 = makeTask({
+    id: 'seed-task-2',
+    updatedAt: SEED_BASE_TIMESTAMP,
+    syncStatus: 'local',
+  });
+  const needPush = findItemsNeedingPush(
+    [untouchedSeed, untouchedSeed2, localOfflineNew],
+    [remoteEditedSeed]
+  );
+  assert.deepEqual(
+    needPush.map((t) => t.id),
+    ['task-offline-1']
+  );
+
+  // When cloud is empty (brand-new vault), initial seeds ARE pushed
+  const initialPush = findItemsNeedingPush([untouchedSeed, untouchedSeed2], []);
+  assert.equal(initialPush.length, 2);
 });
 

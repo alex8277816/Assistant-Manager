@@ -10,6 +10,7 @@ import type {
   WorkflowPlugin,
 } from '../types/assistant';
 import { addDaysToDateStr } from '../utils/smartEngine';
+import { SEED_BASE_TIMESTAMP } from '../utils/syncMerge';
 
 const DB_NAME = 'kairo-assistant-db';
 const DB_VERSION = 1;
@@ -40,7 +41,7 @@ export function createSeedWorkspace(): PersistedWorkspace {
   const today = getTodayDateStr();
   const tomorrow = addDaysToDateStr(today, 1);
   const dayAfter = addDaysToDateStr(today, 2);
-  const now = Date.now();
+  const now = SEED_BASE_TIMESTAMP;
 
   const tasks: TaskItem[] = [
     {

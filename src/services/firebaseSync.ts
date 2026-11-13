@@ -200,6 +200,29 @@ export async function fetchUserVaultMeta(uid: string): Promise<RemoteVaultMeta |
   }
 }
 
+export function subscribeUserVaultMeta(
+  uid: string,
+  onMeta: (meta: RemoteVaultMeta) => void
+): Unsubscribe {
+  return onSnapshot(
+    doc(db, 'users', uid),
+    (snap) => {
+      if (!snap.exists()) return;
+      const d = snap.data();
+      onMeta({
+        vaultSalt: d.vaultSalt,
+        vaultCheckCipher: d.vaultCheckCipher,
+        vaultCheckIv: d.vaultCheckIv,
+        themeMode: d.themeMode,
+        themeAccent: d.themeAccent,
+      });
+    },
+    () => {
+      // Gracefully stay in offline mode if snapshot listener fails
+    }
+  );
+}
+
 export async function upsertUserVaultMeta(
   uid: string,
   meta: RemoteVaultMeta

@@ -50,6 +50,7 @@ import {
   filterBusinessCards,
   validateAndNormalizeCardDraft,
 } from './cardHelpers';
+import { buildSerialPairingUrl, parseSerialPairingHash } from './pairingLink';
 import type { BusinessCardItem, MemoItem, TaskItem, WorkflowPlugin } from '../types/assistant';
 
 const BASE_DATE = '2026-11-12';
@@ -472,4 +473,30 @@ test('cardHelpers validates, builds, and filters business cards cleanly', () => 
     assert.equal(list.length, 1);
     assert.equal(list[0].id, created.id);
   }
+});
+
+test('pairingLink encodes and parses #pair= hash fragments safely without query params', () => {
+  const urlNoPwd = buildSerialPairingUrl('https://kairo.example.com/', 'kairo-1a2b-3c4d-5e6f-7a8b');
+  assert.match(urlNoPwd, /^https:\/\/kairo\.example\.com\/#pair=[A-Za-z0-9_-]+$/);
+  assert.equal(urlNoPwd.includes('?'), false);
+
+  const parsedNoPwd = parseSerialPairingHash(urlNoPwd);
+  assert.deepEqual(parsedNoPwd, {
+    serial: 'KAIRO-1A2B-3C4D-5E6F-7A8B',
+    password: undefined,
+  });
+
+  const urlWithPwd = buildSerialPairingUrl(
+    'https://kairo.example.com',
+    'KAIRO-ABCD-1234-EF56-7890',
+    'secret77'
+  );
+  const parsedWithPwd = parseSerialPairingHash(urlWithPwd.slice(urlWithPwd.indexOf('#')));
+  assert.deepEqual(parsedWithPwd, {
+    serial: 'KAIRO-ABCD-1234-EF56-7890',
+    password: 'secret77',
+  });
+
+  assert.equal(parseSerialPairingHash('#pair=invalid_base64'), null);
+  assert.equal(parseSerialPairingHash(''), null);
 });

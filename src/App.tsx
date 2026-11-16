@@ -39,6 +39,7 @@ import {
   connectWithSyncSerial,
   createCloudBackupSnapshot,
   deleteCloudBackupSnapshot,
+  fetchRemoteEncryptedItems,
   fetchUserVaultMeta,
   listCloudBackupSnapshots,
   pushEncryptedSyncItem,
@@ -50,6 +51,7 @@ import {
   subscribeUserVaultMeta,
   updateRemoteThemePrefs,
   upsertUserVaultMeta,
+  type SyncBatchDiagnostics,
 } from './services/firebaseSync';
 import {
   speakText,
@@ -80,6 +82,7 @@ import {
   resolveSyncIdentityLabel,
   type SyncIdentityHint,
 } from './utils/syncAuth';
+import { parseSerialPairingHash, type ParsedPairingLink } from './utils/pairingLink';
 import { applyWorkflowPlugins } from './utils/pluginEngine';
 import {
   buildReminderTriggerKey,
@@ -168,6 +171,18 @@ export default function App() {
   const [syncIdentityHint, setSyncIdentityHint] = useState<SyncIdentityHint | null>(() =>
     loadSyncIdentityHint()
   );
+  const [activeSyncSerial, setActiveSyncSerial] = useState<string | null>(null);
+  const [pairedPrefill, setPairedPrefill] = useState<ParsedPairingLink | null>(null);
+  const autoPairAttemptedRef = useRef(false);
+  const remoteSyncedOnceRef = useRef(false);
+  const [syncDiagnostics, setSyncDiagnostics] = useState<
+    SyncBatchDiagnostics & { lastError: string | null }
+  >({
+    remoteTotalDocs: 0,
+    decryptedCount: 0,
+    skippedDecryptCount: 0,
+    lastError: null,
+  });
   const [cloudBackups, setCloudBackups] = useState<CloudBackupRecord[]>([]);
   const [isSpeaking, setIsSpeaking] = useState(false);
 
@@ -232,6 +247,23 @@ export default function App() {
       setLastSyncedAt(ws.lastSyncedAt);
       setLoaded(true);
     });
+
+    const consumePairingHash = () => {
+      if (typeof window === 'undefined' || !window.location.hash) return;
+      const parsedPair = parseSerialPairingHash(window.location.hash);
+      if (parsedPair) {
+        autoPairAttemptedRef.current = false;
+        setPairedPrefill({ ...parsedPair });
+        setActiveTab('settings');
+        window.history.replaceState(
+          null,
+          '',
+          `${window.location.pathname}${window.location.search}`
+        );
+      }
+    };
+    consumePairingHash();
+    window.addEventListener('hashchange', consumePairingHash);
     const unsubSpeak = subscribeSpeakingState((s) => setIsSpeaking(s.isSpeaking));
 
     // Same-device cross-tab / installed PWA window sync via BroadcastChannel
@@ -257,6 +289,7 @@ export default function App() {
 
     return () => {
       active = false;
+      window.removeEventListener('hashchange', consumePairingHash);
       unsubSpeak();
       channel?.close();
     };
@@ -382,7 +415,37 @@ export default function App() {
         cards?: BusinessCardItem[];
       }
     ) => {
-      const current = latestCollectionsRef.current;
+      let current = latestCollectionsRef.current;
+
+      if (!remoteSyncedOnceRef.current) {
+        try {
+          const { batch, diagnostics } = await fetchRemoteEncryptedItems(targetUser.uid, targetKey);
+          remoteSnapshotRef.current = batch;
+          remoteSyncedOnceRef.current = true;
+          setSyncDiagnostics({ ...diagnostics, lastError: null });
+
+          const mergedTasks = mergeSyncedCollection(overrideSnapshot?.tasks ?? current.tasks, batch.tasks);
+          const mergedMemos = mergeSyncedCollection(overrideSnapshot?.memos ?? current.memos, batch.memos);
+          const mergedPlugins = mergeSyncedCollection(overrideSnapshot?.plugins ?? current.plugins, batch.plugins);
+          const mergedCards = mergeSyncedCollection(overrideSnapshot?.cards ?? current.businessCards, batch.cards);
+          setTasks(mergedTasks);
+          setMemos(mergedMemos);
+          setPlugins(mergedPlugins);
+          setBusinessCards(mergedCards);
+          current = {
+            tasks: mergedTasks,
+            memos: mergedMemos,
+            plugins: mergedPlugins,
+            businessCards: mergedCards,
+          };
+        } catch (err) {
+          setSyncDiagnostics((prev) => ({
+            ...prev,
+            lastError: err instanceof Error ? err.message : '無法讀取雲端資料',
+          }));
+        }
+      }
+
       const remote = remoteSnapshotRef.current;
       const pushTasks = findItemsNeedingPush(overrideSnapshot?.tasks ?? current.tasks, remote.tasks);
       const pushMemos = findItemsNeedingPush(overrideSnapshot?.memos ?? current.memos, remote.memos);
@@ -417,7 +480,14 @@ export default function App() {
           setBusinessCards((prev) => prev.map((c) => (pushedCardIds.has(c.id) ? { ...c, syncStatus: 'synced' } : c)));
         }
         setLastSyncedAt(Date.now());
+        setSyncDiagnostics((prev) => ({ ...prev, lastError: null }));
         return totalToPush;
+      } catch (err) {
+        setSyncDiagnostics((prev) => ({
+          ...prev,
+          lastError: err instanceof Error ? err.message : '上傳同步失敗',
+        }));
+        throw err;
       } finally {
         setSyncingNow(false);
       }
@@ -428,27 +498,40 @@ export default function App() {
   // 6. Subscribe E2EE Firestore Sync when authenticated AND vault unlocked
   useEffect(() => {
     if (!user || !cryptoKey) return;
-    const unsub = subscribeEncryptedSyncItems(user.uid, cryptoKey, (batch) => {
-      remoteSnapshotRef.current = batch;
-      const current = latestCollectionsRef.current;
+    remoteSyncedOnceRef.current = false;
+    const unsub = subscribeEncryptedSyncItems(
+      user.uid,
+      cryptoKey,
+      (batch, diagnostics) => {
+        remoteSnapshotRef.current = batch;
+        remoteSyncedOnceRef.current = true;
+        setSyncDiagnostics({ ...diagnostics, lastError: null });
+        const current = latestCollectionsRef.current;
 
-      setTasks((prev) => mergeSyncedCollection(prev, batch.tasks));
-      setMemos((prev) => mergeSyncedCollection(prev, batch.memos));
-      setPlugins((prev) => mergeSyncedCollection(prev, batch.plugins));
-      setBusinessCards((prev) => mergeSyncedCollection(prev, batch.cards));
-      setLastSyncedAt(Date.now());
+        setTasks((prev) => mergeSyncedCollection(prev, batch.tasks));
+        setMemos((prev) => mergeSyncedCollection(prev, batch.memos));
+        setPlugins((prev) => mergeSyncedCollection(prev, batch.plugins));
+        setBusinessCards((prev) => mergeSyncedCollection(prev, batch.cards));
+        setLastSyncedAt(Date.now());
 
-      // Automatically push any local offline edits or new items not yet on remote
-      const pendingTasks = findItemsNeedingPush(current.tasks, batch.tasks);
-      const pendingMemos = findItemsNeedingPush(current.memos, batch.memos);
-      const pendingPlugins = findItemsNeedingPush(current.plugins, batch.plugins);
-      const pendingCards = findItemsNeedingPush(current.businessCards, batch.cards);
-      if (
-        pendingTasks.length + pendingMemos.length + pendingPlugins.length + pendingCards.length > 0
-      ) {
-        flushPendingItemsToCloud(user, cryptoKey).catch(() => {});
+        // Automatically push any local offline edits or new items not yet on remote
+        const pendingTasks = findItemsNeedingPush(current.tasks, batch.tasks);
+        const pendingMemos = findItemsNeedingPush(current.memos, batch.memos);
+        const pendingPlugins = findItemsNeedingPush(current.plugins, batch.plugins);
+        const pendingCards = findItemsNeedingPush(current.businessCards, batch.cards);
+        if (
+          pendingTasks.length + pendingMemos.length + pendingPlugins.length + pendingCards.length > 0
+        ) {
+          flushPendingItemsToCloud(user, cryptoKey).catch(() => {});
+        }
+      },
+      (err) => {
+        setSyncDiagnostics((prev) => ({
+          ...prev,
+          lastError: err.message || '雲端即時監聽發生錯誤',
+        }));
       }
-    });
+    );
 
     const handleOnline = () => {
       flushPendingItemsToCloud(user, cryptoKey).catch(() => {});
@@ -813,7 +896,13 @@ export default function App() {
     const now = Date.now();
     const existing = latestCollectionsRef.current.tasks.find((t) => t.id === id);
     const target: TaskItem | null = existing
-      ? { ...existing, deleted: true, version: existing.version + 1, updatedAt: now }
+      ? {
+          ...existing,
+          deleted: true,
+          version: existing.version + 1,
+          syncStatus: user && cryptoKey ? 'pending' : 'local',
+          updatedAt: now,
+        }
       : null;
     setTasks((prev) => prev.map((t) => (t.id === id && target ? target : t)));
     if (target) syncSingleItemToCloud('task', target);
@@ -853,6 +942,7 @@ export default function App() {
           dueDate: newDate,
           startTime: newTime ?? existing.startTime,
           version: existing.version + 1,
+          syncStatus: user && cryptoKey ? 'pending' : 'local',
           updatedAt: now,
         }
       : null;
@@ -895,7 +985,13 @@ export default function App() {
     if (existingId) {
       const existing = latestCollectionsRef.current.memos.find((m) => m.id === existingId);
       const updated: MemoItem | null = existing
-        ? { ...existing, ...draft, version: existing.version + 1, updatedAt: now }
+        ? {
+            ...existing,
+            ...draft,
+            version: existing.version + 1,
+            syncStatus: user && cryptoKey ? 'pending' : 'local',
+            updatedAt: now,
+          }
         : null;
       setMemos((prev) => prev.map((m) => (m.id === existingId && updated ? updated : m)));
       if (updated) syncSingleItemToCloud('memo', updated);
@@ -917,7 +1013,13 @@ export default function App() {
     const now = Date.now();
     const existing = latestCollectionsRef.current.memos.find((m) => m.id === id);
     const deletedMemo: MemoItem | null = existing
-      ? { ...existing, deleted: true, version: existing.version + 1, updatedAt: now }
+      ? {
+          ...existing,
+          deleted: true,
+          version: existing.version + 1,
+          syncStatus: user && cryptoKey ? 'pending' : 'local',
+          updatedAt: now,
+        }
       : null;
     setMemos((prev) => prev.map((m) => (m.id === id && deletedMemo ? deletedMemo : m)));
     if (deletedMemo) syncSingleItemToCloud('memo', deletedMemo);
@@ -959,7 +1061,13 @@ export default function App() {
     const now = Date.now();
     const existing = latestCollectionsRef.current.businessCards.find((c) => c.id === id);
     const deletedCard: BusinessCardItem | null = existing
-      ? { ...existing, deleted: true, version: existing.version + 1, updatedAt: now }
+      ? {
+          ...existing,
+          deleted: true,
+          version: existing.version + 1,
+          syncStatus: user && cryptoKey ? 'pending' : 'local',
+          updatedAt: now,
+        }
       : null;
     setBusinessCards((prev) =>
       prev.map((c) => (c.id === id && deletedCard ? deletedCard : c))
@@ -968,7 +1076,7 @@ export default function App() {
     showToast('已刪除名片');
   };
 
-  // Vault & Backup Handlers
+  // Vault & Backup Handlers (Cloud vault metadata always takes precedence when authenticated)
   const handleSetupOrUnlockVault = async (
     passphrase: string,
     targetUser?: User
@@ -979,7 +1087,12 @@ export default function App() {
     let checkIvToUse = vault.checkIv;
     let vaultInitialized = vault.initialized;
 
-    if (activeUser && (!vaultInitialized || !saltToUse || !checkCipherToUse || !checkIvToUse)) {
+    if (activeUser) {
+      // Always align with remote vault salt/check so cross-device keys match bit-for-bit
+      vaultInitialized = false;
+      saltToUse = null;
+      checkCipherToUse = null;
+      checkIvToUse = null;
       try {
         const remoteMeta = await fetchUserVaultMeta(activeUser.uid);
         if (remoteMeta) {
@@ -995,8 +1108,11 @@ export default function App() {
             checkIv: remoteMeta.vaultCheckIv,
           }));
         }
-      } catch {
-        // Ignore offline lookup failure
+      } catch (err) {
+        setSyncDiagnostics((prev) => ({
+          ...prev,
+          lastError: err instanceof Error ? err.message : '無法讀取雲端金鑰資訊',
+        }));
       }
     }
 
@@ -1004,6 +1120,7 @@ export default function App() {
       const key = await deriveAesKey(passphrase, saltToUse);
       const valid = await verifyVaultCheck(key, checkCipherToUse, checkIvToUse);
       if (!valid) return false;
+      remoteSyncedOnceRef.current = false;
       setCryptoKey(key);
       setActivePassphrase(passphrase);
       setVault({
@@ -1013,6 +1130,7 @@ export default function App() {
         checkCipher: checkCipherToUse,
         checkIv: checkIvToUse,
       });
+      setSyncDiagnostics((prev) => ({ ...prev, lastError: null }));
       if (activeUser) {
         flushPendingItemsToCloud(activeUser, key).catch(() => {});
       }
@@ -1022,6 +1140,7 @@ export default function App() {
     const salt = generateSaltBase64(16);
     const key = await deriveAesKey(passphrase, salt);
     const { checkCipher, checkIv } = await createVaultCheck(key);
+    remoteSyncedOnceRef.current = false;
     setCryptoKey(key);
     setActivePassphrase(passphrase);
     setVault({
@@ -1046,9 +1165,13 @@ export default function App() {
         for (const m of current.memos) await pushEncryptedSyncItem(activeUser.uid, key, 'memo', m);
         for (const p of current.plugins) await pushEncryptedSyncItem(activeUser.uid, key, 'plugin', p);
         for (const c of current.businessCards) await pushEncryptedSyncItem(activeUser.uid, key, 'card', c);
+        remoteSyncedOnceRef.current = true;
         setLastSyncedAt(Date.now());
-      } catch {
-        // Ignore offline errors
+        setSyncDiagnostics((prev) => ({ ...prev, lastError: null }));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : '雲端初始化寫入失敗';
+        setSyncDiagnostics((prev) => ({ ...prev, lastError: msg }));
+        showToast('無法寫入雲端同步空間，請確認網路連線或資料庫權限');
       }
     }
     return true;
@@ -1105,25 +1228,80 @@ export default function App() {
     }
   };
 
-  const handleConnectSyncSerial = async (
-    serial: string,
-    syncPassword: string,
-    intent: 'auto' | 'create' | 'join' = 'auto'
-  ): Promise<{ ok: boolean; message: string }> => {
-    setAuthLoading(true);
+  const handleConnectSyncSerial = useCallback(
+    async (
+      serial: string,
+      syncPassword: string,
+      intent: 'auto' | 'create' | 'join' = 'auto'
+    ): Promise<{ ok: boolean; message: string }> => {
+      setAuthLoading(true);
+      try {
+        const { user: authedUser, formattedSerial } = await connectWithSyncSerial(
+          serial,
+          syncPassword,
+          intent
+        );
+        setActiveSyncSerial(formattedSerial);
+        return await finalizeSyncAuth(authedUser, syncPassword, formattedSerial);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : '序號配對連線失敗';
+        showToast(message);
+        return { ok: false, message };
+      } finally {
+        setAuthLoading(false);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [theme.mode, theme.accent]
+  );
+
+  // Auto-handle #pair= quick link once local IndexedDB workspace has finished loading
+  useEffect(() => {
+    if (!loaded || !pairedPrefill || autoPairAttemptedRef.current) return;
+    autoPairAttemptedRef.current = true;
+    setActiveTab('settings');
+    if (pairedPrefill.password) {
+      handleConnectSyncSerial(pairedPrefill.serial, pairedPrefill.password, 'auto');
+    } else {
+      showToast('已從快速配對連結帶入序號，請輸入 6 字元配對密碼完成同步連線');
+    }
+  }, [loaded, pairedPrefill, handleConnectSyncSerial, showToast]);
+
+  const handleForceTwoWaySync = async () => {
+    if (!user || !cryptoKey) return;
+    remoteSyncedOnceRef.current = false;
+    setSyncingNow(true);
     try {
-      const { user: authedUser, formattedSerial } = await connectWithSyncSerial(
-        serial,
-        syncPassword,
-        intent
-      );
-      return await finalizeSyncAuth(authedUser, syncPassword, formattedSerial);
+      const pushed = await flushPendingItemsToCloud(user, cryptoKey);
+      const { remoteTotalDocs, decryptedCount, skippedDecryptCount } =
+        remoteSyncedOnceRef.current
+          ? await fetchRemoteEncryptedItems(user.uid, cryptoKey).then((res) => {
+              remoteSnapshotRef.current = res.batch;
+              setTasks((prev) => mergeSyncedCollection(prev, res.batch.tasks));
+              setMemos((prev) => mergeSyncedCollection(prev, res.batch.memos));
+              setPlugins((prev) => mergeSyncedCollection(prev, res.batch.plugins));
+              setBusinessCards((prev) => mergeSyncedCollection(prev, res.batch.cards));
+              setSyncDiagnostics({ ...res.diagnostics, lastError: null });
+              return res.diagnostics;
+            })
+          : { remoteTotalDocs: 0, decryptedCount: 0, skippedDecryptCount: 0 };
+
+      setLastSyncedAt(Date.now());
+      if (skippedDecryptCount > 0) {
+        showToast(
+          `雲端共 ${remoteTotalDocs} 筆資料，但有 ${skippedDecryptCount} 筆金鑰密碼不符無法解密，請輸入原金鑰密碼解鎖`
+        );
+      } else {
+        showToast(
+          `雙向同步完成：雲端共 ${decryptedCount} 筆已合併${pushed > 0 ? `，本次上傳 ${pushed} 筆` : ''}`
+        );
+      }
     } catch (err) {
-      const message = err instanceof Error ? err.message : '序號配對連線失敗';
-      showToast(message);
-      return { ok: false, message };
+      const msg = err instanceof Error ? err.message : '強制同步失敗';
+      setSyncDiagnostics((prev) => ({ ...prev, lastError: msg }));
+      showToast('同步過程發生異常，請確認網路與權限設定');
     } finally {
-      setAuthLoading(false);
+      setSyncingNow(false);
     }
   };
 
@@ -1783,6 +1961,9 @@ export default function App() {
                     : `已連線「${resolveSyncIdentityLabel(user.email, syncIdentityHint)}」，請輸入上方金鑰密碼以解鎖雲端同步`
                   : '目前為純離線本機儲存模式，輸入「帳號密碼」或「同步序號」即可啟用跨平台加密同步。'
               }
+              syncDiagnostics={syncDiagnostics}
+              activeSyncSerial={activeSyncSerial}
+              pairedPrefill={pairedPrefill}
               pendingSyncCount={
                 tasks.filter((t) => t.syncStatus === 'pending').length +
                 memos.filter((m) => m.syncStatus === 'pending').length +
@@ -1791,17 +1972,21 @@ export default function App() {
               }
               syncingNow={syncingNow}
               sampleCipherPreview={sampleCipherPreview}
-              onSyncNow={async () => {
-                if (!user || !cryptoKey) return;
-                const count = await flushPendingItemsToCloud(user, cryptoKey);
-                showToast(count > 0 ? `已完成 ${count} 筆資料跨平台同步` : '所有裝置資料皆已是最新同步狀態');
-              }}
+              onSyncNow={handleForceTwoWaySync}
               onRegisterSyncAccount={handleRegisterSyncAccount}
               onSignInSyncAccount={handleSignInSyncAccount}
               onConnectSyncSerial={handleConnectSyncSerial}
               onSignOutSync={async () => {
                 await signOutSyncSession();
                 setSyncIdentityHint(null);
+                setActiveSyncSerial(null);
+                remoteSyncedOnceRef.current = false;
+                setSyncDiagnostics({
+                  remoteTotalDocs: 0,
+                  decryptedCount: 0,
+                  skippedDecryptCount: 0,
+                  lastError: null,
+                });
                 setCryptoKey(null);
                 setActivePassphrase(null);
                 setVault((prev) => ({ ...prev, unlocked: false }));

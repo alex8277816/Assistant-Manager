@@ -370,10 +370,82 @@ export interface DecryptedRemoteBatch {
   cards: BusinessCardItem[];
 }
 
+export interface SyncBatchDiagnostics {
+  remoteTotalDocs: number;
+  decryptedCount: number;
+  skippedDecryptCount: number;
+}
+
+async function decryptSnapshotDocs(
+  docs: Array<{ data: () => Record<string, unknown> }>,
+  key: CryptoKey
+): Promise<{ batch: DecryptedRemoteBatch; diagnostics: SyncBatchDiagnostics }> {
+  const tasks: TaskItem[] = [];
+  const memos: MemoItem[] = [];
+  const plugins: WorkflowPlugin[] = [];
+  const cards: BusinessCardItem[] = [];
+  let decryptedCount = 0;
+  let skippedDecryptCount = 0;
+
+  for (const docSnap of docs) {
+    const d = docSnap.data() as {
+      kind?: string;
+      ciphertext?: string;
+      iv?: string;
+    };
+    if (!d.ciphertext || !d.iv) {
+      skippedDecryptCount += 1;
+      continue;
+    }
+    try {
+      const json = await decryptText(key, d.ciphertext, d.iv);
+      const parsed = JSON.parse(json);
+      if (d.kind === 'task') {
+        tasks.push({ ...parsed, syncStatus: 'synced' });
+        decryptedCount += 1;
+      } else if (d.kind === 'memo') {
+        memos.push({ ...parsed, syncStatus: 'synced' });
+        decryptedCount += 1;
+      } else if (d.kind === 'plugin') {
+        plugins.push({ ...parsed, syncStatus: 'synced' });
+        decryptedCount += 1;
+      } else if (d.kind === 'card') {
+        cards.push({ ...parsed, syncStatus: 'synced' });
+        decryptedCount += 1;
+      }
+    } catch {
+      skippedDecryptCount += 1;
+    }
+  }
+
+  return {
+    batch: { tasks, memos, plugins, cards },
+    diagnostics: {
+      remoteTotalDocs: docs.length,
+      decryptedCount,
+      skippedDecryptCount,
+    },
+  };
+}
+
+export async function fetchRemoteEncryptedItems(
+  uid: string,
+  key: CryptoKey
+): Promise<{ batch: DecryptedRemoteBatch; diagnostics: SyncBatchDiagnostics }> {
+  const path = `users/${uid}/items`;
+  try {
+    const q = query(collection(db, 'users', uid, 'items'), where('ownerId', '==', uid));
+    const snapshot = await getDocs(q);
+    return await decryptSnapshotDocs(snapshot.docs, key);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, path);
+  }
+}
+
 export function subscribeEncryptedSyncItems(
   uid: string,
   key: CryptoKey,
-  onBatch: (batch: DecryptedRemoteBatch) => void,
+  onBatch: (batch: DecryptedRemoteBatch, diagnostics: SyncBatchDiagnostics) => void,
   onError?: (err: Error) => void
 ): Unsubscribe {
   const path = `users/${uid}/items`;
@@ -382,26 +454,8 @@ export function subscribeEncryptedSyncItems(
   return onSnapshot(
     q,
     async (snapshot) => {
-      const tasks: TaskItem[] = [];
-      const memos: MemoItem[] = [];
-      const plugins: WorkflowPlugin[] = [];
-      const cards: BusinessCardItem[] = [];
-
-      for (const docSnap of snapshot.docs) {
-        const d = docSnap.data();
-        try {
-          const json = await decryptText(key, d.ciphertext, d.iv);
-          const parsed = JSON.parse(json);
-          if (d.kind === 'task') tasks.push({ ...parsed, syncStatus: 'synced' });
-          else if (d.kind === 'memo') memos.push({ ...parsed, syncStatus: 'synced' });
-          else if (d.kind === 'plugin') plugins.push({ ...parsed, syncStatus: 'synced' });
-          else if (d.kind === 'card') cards.push({ ...parsed, syncStatus: 'synced' });
-        } catch {
-          // Skip items encrypted under an older rotated key
-        }
-      }
-
-      onBatch({ tasks, memos, plugins, cards });
+      const { batch, diagnostics } = await decryptSnapshotDocs(snapshot.docs, key);
+      onBatch(batch, diagnostics);
     },
     (error) => {
       try {

@@ -1,4 +1,5 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import QRCode from 'qrcode';
 import {
   AlertTriangle,
   BellRing,
@@ -12,9 +13,11 @@ import {
   Hash,
   HelpCircle,
   KeyRound,
+  Link2,
   Lock,
   LogOut,
   MonitorSmartphone,
+  QrCode,
   RefreshCw,
   RotateCcw,
   ShieldCheck,
@@ -42,6 +45,8 @@ import {
   TAIWAN_CITIES,
 } from '../utils/govCalendar';
 import { generateSyncSerial, isEmailProviderDisabledError } from '../utils/syncAuth';
+import { buildSerialPairingUrl, type ParsedPairingLink } from '../utils/pairingLink';
+import type { SyncBatchDiagnostics } from '../services/firebaseSync';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { PWAInstallButton } from './PWAInstallButton';
 
@@ -58,6 +63,9 @@ interface SettingsBackupViewProps {
   isSpeaking: boolean;
   cloudBackups: CloudBackupRecord[];
   syncStatusText: string;
+  syncDiagnostics: SyncBatchDiagnostics & { lastError: string | null };
+  activeSyncSerial: string | null;
+  pairedPrefill: ParsedPairingLink | null;
   pendingSyncCount: number;
   syncingNow: boolean;
   sampleCipherPreview: { ciphertext: string; iv: string } | null;
@@ -111,6 +119,9 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
   isSpeaking,
   cloudBackups,
   syncStatusText,
+  syncDiagnostics,
+  activeSyncSerial,
+  pairedPrefill,
   pendingSyncCount,
   syncingNow,
   sampleCipherPreview,
@@ -166,11 +177,61 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
   const [generatedSyncCode, setGeneratedSyncCode] = useState('');
   const [copiedSyncCode, setCopiedSyncCode] = useState(false);
   const [pasteSyncCode, setPasteSyncCode] = useState('');
+  const [showQrPairing, setShowQrPairing] = useState(false);
+  const [includePasswordInQr, setIncludePasswordInQr] = useState(false);
+  const [qrDataUrl, setQrDataUrl] = useState<string>('');
+  const [copiedPairingUrl, setCopiedPairingUrl] = useState(false);
 
   const fileRef = useRef<HTMLInputElement | null>(null);
   const firebaseProvidersUrl = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/providers`;
 
   const isInIframe = typeof window !== 'undefined' && window.self !== window.top;
+  const serialForPairing = (syncSerial.trim() || activeSyncSerial || '').trim();
+
+  useEffect(() => {
+    if (!pairedPrefill) return;
+    setSyncMethod('serial');
+    setSyncSerial(pairedPrefill.serial);
+    if (pairedPrefill.password) {
+      setSerialPassword(pairedPrefill.password);
+    }
+  }, [pairedPrefill]);
+
+  const pairingUrl = useMemo(() => {
+    if (!serialForPairing || typeof window === 'undefined') return '';
+    try {
+      return buildSerialPairingUrl(
+        window.location.origin,
+        serialForPairing,
+        includePasswordInQr ? serialPassword : undefined
+      );
+    } catch {
+      return '';
+    }
+  }, [serialForPairing, includePasswordInQr, serialPassword]);
+
+  useEffect(() => {
+    if (!showQrPairing || !pairingUrl) {
+      setQrDataUrl('');
+      return;
+    }
+    let active = true;
+    QRCode.toDataURL(pairingUrl, {
+      width: 196,
+      margin: 2,
+      errorCorrectionLevel: 'M',
+      color: { dark: '#18181b', light: '#ffffff' },
+    })
+      .then((url) => {
+        if (active) setQrDataUrl(url);
+      })
+      .catch(() => {
+        if (active) setQrDataUrl('');
+      });
+    return () => {
+      active = false;
+    };
+  }, [showQrPairing, pairingUrl]);
 
   const handleAccountSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -214,10 +275,22 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
   const handleGenerateSerial = () => {
     const generated = generateSyncSerial();
     setSyncSerial(generated);
+    setShowQrPairing(true);
     setSyncAuthFeedback({
       type: 'ok',
-      text: '已產生高強度同步序號，請妥善保存此序號並設定至少 6 字元的配對密碼，點擊下方按鈕即可啟用同步。',
+      text: '已產生高強度同步序號，請設定至少 6 字元的配對密碼後按下「以此序號連線」，並可用下方 QR Code 讓手機快速配對。',
     });
+  };
+
+  const handleCopyPairingUrl = async () => {
+    if (!pairingUrl) return;
+    try {
+      await navigator.clipboard.writeText(pairingUrl);
+      setCopiedPairingUrl(true);
+      window.setTimeout(() => setCopiedPairingUrl(false), 2000);
+    } catch {
+      // ignore clipboard error
+    }
   };
 
   const handleCopySerial = async () => {
@@ -474,7 +547,14 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
             </h2>
             <p className="text-xs text-stone-600 dark:text-zinc-400 mt-1 tabular-nums">
               {syncStatusText}
-              {pendingSyncCount > 0 && ` · 待同步項目 ${pendingSyncCount} 筆`}
+              {user && vault.unlocked && (
+                <>
+                  {' '}
+                  · 雲端加密資料 {syncDiagnostics.remoteTotalDocs} 筆 · 已解密合併{' '}
+                  {syncDiagnostics.decryptedCount} 筆
+                </>
+              )}
+              {pendingSyncCount > 0 && ` · 待同步 ${pendingSyncCount} 筆`}
             </p>
           </div>
 
@@ -484,12 +564,22 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
                 <UserCheck className="w-3.5 h-3.5 accent-text shrink-0" />
                 <span className="truncate">{syncIdentityLabel}</span>
               </span>
+              {serialForPairing && (
+                <button
+                  type="button"
+                  onClick={() => setShowQrPairing((prev) => !prev)}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 dark:border-zinc-700 px-3.5 py-2 text-xs font-medium hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[40px] whitespace-nowrap"
+                >
+                  <QrCode className="w-3.5 h-3.5 accent-text" />
+                  <span>{showQrPairing ? '收合配對 QR Code' : '手機掃碼 / 配對連結'}</span>
+                </button>
+              )}
               {vault.unlocked && (
                 <button
                   type="button"
                   disabled={syncingNow}
                   onClick={() => onSyncNow()}
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 dark:border-zinc-700 px-3.5 py-2 text-xs font-medium hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[40px] disabled:opacity-60"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 dark:border-zinc-700 px-3.5 py-2 text-xs font-medium hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[40px] disabled:opacity-60 whitespace-nowrap"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 accent-text ${syncingNow ? 'animate-spin' : ''}`} />
                   <span>{syncingNow ? '同步中...' : '立即雙向同步'}</span>
@@ -501,7 +591,7 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
                   await onSignOutSync();
                   setSyncAuthFeedback({ type: 'ok', text: '已登出同步空間，本機離線資料仍完整保留。' });
                 }}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 dark:border-zinc-700 px-3.5 py-2 text-xs font-medium hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[40px]"
+                className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 dark:border-zinc-700 px-3.5 py-2 text-xs font-medium hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[40px] whitespace-nowrap"
               >
                 <LogOut className="w-3.5 h-3.5" />
                 <span>登出同步</span>
@@ -509,6 +599,65 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
             </div>
           )}
         </div>
+
+        {user && syncDiagnostics.skippedDecryptCount > 0 && (
+          <div className="rounded-xl border border-amber-300/80 dark:border-amber-800/70 bg-amber-50/90 dark:bg-amber-950/30 px-4 py-3 text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2.5">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+            <div>
+              偵測到雲端有 <span className="font-mono font-semibold">{syncDiagnostics.skippedDecryptCount}</span> 筆資料使用另一組加密密碼儲存而無法解密。請於上方「端對端加密安全金鑰庫」輸入建立同步空間時的原密碼並點選「驗證 / 更新」。
+            </div>
+          </div>
+        )}
+
+        {user && syncDiagnostics.lastError && (
+          <div
+            role="alert"
+            className="rounded-xl border border-rose-300/80 dark:border-rose-800/70 bg-rose-50/90 dark:bg-rose-950/30 px-4 py-3 text-xs text-rose-800 dark:text-rose-200 flex items-start gap-2.5"
+          >
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-rose-600 dark:text-rose-400" />
+            <div>雲端同步發生異常：{syncDiagnostics.lastError}</div>
+          </div>
+        )}
+
+        {user && showQrPairing && pairingUrl && (
+          <div className="rounded-xl border border-stone-200 dark:border-zinc-800 bg-stone-50 dark:bg-zinc-950 p-4 flex flex-col sm:flex-row items-start sm:items-center gap-5">
+            {qrDataUrl && (
+              <div className="shrink-0 rounded-xl bg-white p-2 border border-stone-200">
+                <img
+                  src={qrDataUrl}
+                  alt="手機掃碼快速配對 QR Code"
+                  className="w-40 h-40 block"
+                />
+              </div>
+            )}
+            <div className="flex-1 min-w-0 space-y-2.5">
+              <h3 className="text-sm font-semibold text-stone-900 dark:text-zinc-100">
+                手機掃碼或透過連結快速配對
+              </h3>
+              <p className="text-xs text-stone-600 dark:text-zinc-400 leading-relaxed">
+                請用手機相機掃描左側 QR Code，或將配對連結傳到手機開啟，即可自動帶入序號 <span className="font-mono font-semibold">{serialForPairing}</span>。連結僅使用 URL Hash Fragment（#pair=），不會傳送至伺服器紀錄。
+              </p>
+              <label className="inline-flex items-center gap-2 text-xs text-stone-700 dark:text-zinc-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={includePasswordInQr}
+                  onChange={(e) => setIncludePasswordInQr(e.target.checked)}
+                />
+                <span>一並在 QR Code 與連結內包含配對密碼（僅限本人裝置掃碼，切勿公開分享）</span>
+              </label>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleCopyPairingUrl}
+                  className="inline-flex items-center gap-1.5 rounded-xl accent-bg px-3.5 py-2 text-xs font-medium min-h-[40px] whitespace-nowrap"
+                >
+                  {copiedPairingUrl ? <Check className="w-3.5 h-3.5" /> : <Link2 className="w-3.5 h-3.5" />}
+                  <span>{copiedPairingUrl ? '已複製快速配對連結' : '複製快速配對連結'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {!user && (
           <div className="rounded-xl border border-stone-200 dark:border-zinc-800 bg-stone-50 dark:bg-zinc-950 p-4 space-y-4">
@@ -699,17 +848,69 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
 
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <p className="text-[11px] text-stone-500 dark:text-zinc-400">
-                    無需填寫信箱或任何個人資料：第一台裝置產生序號配對後，在其他電腦或手機輸入相同序號與密碼即可雙向同步。
+                    第一台裝置產生序號並完成連線後，可用 QR Code 或配對連結讓另一台電腦與手機快速同步。
                   </p>
-                  <button
-                    type="submit"
-                    disabled={authLoading}
-                    className="inline-flex items-center gap-1.5 rounded-xl accent-bg px-4 py-2 text-xs font-medium min-h-[40px] disabled:opacity-60 whitespace-nowrap"
-                  >
-                    <Hash className="w-4 h-4" />
-                    <span>{authLoading ? '配對連線中...' : '以此序號連線 / 配對同步'}</span>
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {serialForPairing && (
+                      <button
+                        type="button"
+                        onClick={() => setShowQrPairing((prev) => !prev)}
+                        className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 dark:border-zinc-700 px-3.5 py-2 text-xs font-medium hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[40px] whitespace-nowrap"
+                      >
+                        <QrCode className="w-4 h-4 accent-text" />
+                        <span>{showQrPairing ? '收合 QR Code' : '產生配對 QR Code'}</span>
+                      </button>
+                    )}
+                    <button
+                      type="submit"
+                      disabled={authLoading}
+                      className="inline-flex items-center gap-1.5 rounded-xl accent-bg px-4 py-2 text-xs font-medium min-h-[40px] disabled:opacity-60 whitespace-nowrap"
+                    >
+                      <Hash className="w-4 h-4" />
+                      <span>{authLoading ? '配對連線中...' : '以此序號連線 / 配對同步'}</span>
+                    </button>
+                  </div>
                 </div>
+
+                {showQrPairing && pairingUrl && (
+                  <div className="rounded-xl border border-stone-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 flex flex-col sm:flex-row items-start sm:items-center gap-4">
+                    {qrDataUrl && (
+                      <div className="shrink-0 rounded-xl bg-white p-2 border border-stone-200">
+                        <img
+                          src={qrDataUrl}
+                          alt="手機掃碼快速配對 QR Code"
+                          className="w-36 h-36 block"
+                        />
+                      </div>
+                    )}
+                    <div className="flex-1 min-w-0 space-y-2">
+                      <p className="text-xs font-semibold text-stone-900 dark:text-zinc-100">
+                        手機掃碼 / 配對連結（僅傳遞於 URL Hash #pair=）
+                      </p>
+                      <p className="text-xs text-stone-600 dark:text-zinc-400">
+                        手機開啟此連結將自動導向「同步序號配對」並帶入序號 <span className="font-mono font-semibold">{serialForPairing}</span>。
+                      </p>
+                      <label className="inline-flex items-center gap-2 text-xs text-stone-700 dark:text-zinc-300 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={includePasswordInQr}
+                          onChange={(e) => setIncludePasswordInQr(e.target.checked)}
+                        />
+                        <span>一並包含目前輸入的配對密碼（免手動輸入密碼，請勿公開分享）</span>
+                      </label>
+                      <div>
+                        <button
+                          type="button"
+                          onClick={handleCopyPairingUrl}
+                          className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 dark:border-zinc-700 px-3.5 py-2 text-xs font-medium hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[38px] whitespace-nowrap"
+                        >
+                          {copiedPairingUrl ? <Check className="w-3.5 h-3.5 accent-text" /> : <Link2 className="w-3.5 h-3.5 accent-text" />}
+                          <span>{copiedPairingUrl ? '已複製快速配對連結' : '複製快速配對連結'}</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </form>
             )}
 

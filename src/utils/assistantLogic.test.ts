@@ -20,9 +20,11 @@ import { applyWorkflowPlugins, exportTasksToMarkdown } from './pluginEngine';
 import {
   createEncryptedArchive,
   createVaultCheck,
+  decodeEncryptedSyncCode,
   decryptEncryptedArchive,
   decryptText,
   deriveAesKey,
+  encodeEncryptedSyncCode,
   encryptText,
   generateSaltBase64,
   verifyVaultCheck,
@@ -37,6 +39,7 @@ import {
   deriveSerialAuthCredentials,
   formatAuthErrorMessage,
   generateSyncSerial,
+  isEmailProviderDisabledError,
   maskSyncSerial,
   normalizeAccountIdentifier,
   normalizeSyncSerial,
@@ -244,6 +247,21 @@ test('cryptoVault encrypts, decrypts, verifies vault check, and restores encrypt
   const archive = await createEncryptedArchive('backup-pass-99', { tasks: [1, 2, 3] }, 3);
   const restored = await decryptEncryptedArchive<{ tasks: number[] }>('backup-pass-99', archive);
   assert.deepEqual(restored.tasks, [1, 2, 3]);
+
+  const syncCode = await encodeEncryptedSyncCode(
+    'sync-secret-88',
+    { note: '繁體中文跨裝置同步資料 🚀', count: 2 },
+    1
+  );
+  assert.ok(syncCode.startsWith('KAIRO-SYNC-V1:'));
+  const decoded = await decodeEncryptedSyncCode<{ note: string; count: number }>(
+    'sync-secret-88',
+    syncCode
+  );
+  assert.equal(decoded.note, '繁體中文跨裝置同步資料 🚀');
+  assert.equal(decoded.count, 2);
+  await assert.rejects(() => decodeEncryptedSyncCode('wrong-pass', syncCode));
+  await assert.rejects(() => decodeEncryptedSyncCode('sync-secret-88', 'INVALID:abc'));
 });
 
 test('findTodayPendingSummary summarizes incomplete tasks for today', () => {
@@ -403,7 +421,11 @@ test('syncAuth normalizes custom accounts, generates & derives deterministic ser
   assert.notEqual(cred1.authPassword, credDiffPwd.authPassword);
 
   assert.equal(resolveSyncIdentityLabel(custom.authEmail, null), 'alex_2026');
-  assert.match(formatAuthErrorMessage({ code: 'auth/operation-not-allowed' }), /Email\/Password/);
+  const opNotAllowedMsg = formatAuthErrorMessage({ code: 'auth/operation-not-allowed' });
+  assert.match(opNotAllowedMsg, /Email\/Password/);
+  assert.equal(isEmailProviderDisabledError({ code: 'auth/operation-not-allowed' }), true);
+  assert.equal(isEmailProviderDisabledError(opNotAllowedMsg), true);
+  assert.equal(isEmailProviderDisabledError('網路連線異常'), false);
 });
 
 test('cardHelpers validates, builds, and filters business cards cleanly', () => {

@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
 import {
+  AlertTriangle,
   BellRing,
   Check,
   Cloud,
@@ -9,6 +10,7 @@ import {
   Download,
   ExternalLink,
   Hash,
+  HelpCircle,
   KeyRound,
   Lock,
   LogOut,
@@ -39,7 +41,8 @@ import {
   DGPA_TYPHOON_URL,
   TAIWAN_CITIES,
 } from '../utils/govCalendar';
-import { generateSyncSerial } from '../utils/syncAuth';
+import { generateSyncSerial, isEmailProviderDisabledError } from '../utils/syncAuth';
+import firebaseConfig from '../../firebase-applet-config.json';
 import { PWAInstallButton } from './PWAInstallButton';
 
 interface SettingsBackupViewProps {
@@ -74,6 +77,8 @@ interface SettingsBackupViewProps {
   onDeleteCloudBackup: (backupId: string) => Promise<void>;
   onExportEncryptedFile: (passphrase: string) => Promise<void>;
   onImportEncryptedFile: (file: File, passphrase: string) => Promise<boolean>;
+  onExportSyncCode: (passphrase: string) => Promise<string>;
+  onImportSyncCode: (rawCode: string, passphrase: string) => Promise<boolean>;
   onUpdateTheme: (next: ThemeSettings) => void;
   onUpdateVoice: (next: VoiceSettings) => void;
   onUpdateGovSettings: (next: GovSettings) => void;
@@ -121,6 +126,8 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
   onDeleteCloudBackup,
   onExportEncryptedFile,
   onImportEncryptedFile,
+  onExportSyncCode,
+  onImportSyncCode,
   onUpdateTheme,
   onUpdateVoice,
   onUpdateGovSettings,
@@ -154,8 +161,14 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
     type: 'ok' | 'error';
     text: string;
   } | null>(null);
+  const [showConsoleGuide, setShowConsoleGuide] = useState(false);
+  const [copiedConsoleUrl, setCopiedConsoleUrl] = useState(false);
+  const [generatedSyncCode, setGeneratedSyncCode] = useState('');
+  const [copiedSyncCode, setCopiedSyncCode] = useState(false);
+  const [pasteSyncCode, setPasteSyncCode] = useState('');
 
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const firebaseProvidersUrl = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/providers`;
 
   const isInIframe = typeof window !== 'undefined' && window.self !== window.top;
 
@@ -167,6 +180,9 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
         ? await onRegisterSyncAccount(accountId, accountPassword)
         : await onSignInSyncAccount(accountId, accountPassword);
     setSyncAuthFeedback({ type: res.ok ? 'ok' : 'error', text: res.message });
+    if (!res.ok && isEmailProviderDisabledError(res.message)) {
+      setShowConsoleGuide(true);
+    }
     if (res.ok) {
       setAccountPassword('');
     }
@@ -177,8 +193,21 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
     setSyncAuthFeedback(null);
     const res = await onConnectSyncSerial(syncSerial, serialPassword, 'auto');
     setSyncAuthFeedback({ type: res.ok ? 'ok' : 'error', text: res.message });
+    if (!res.ok && isEmailProviderDisabledError(res.message)) {
+      setShowConsoleGuide(true);
+    }
     if (res.ok) {
       setSerialPassword('');
+    }
+  };
+
+  const handleCopyConsoleUrl = async () => {
+    try {
+      await navigator.clipboard.writeText(firebaseProvidersUrl);
+      setCopiedConsoleUrl(true);
+      window.setTimeout(() => setCopiedConsoleUrl(false), 2000);
+    } catch {
+      // ignore clipboard error
     }
   };
 
@@ -258,6 +287,43 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
     const ok = await onImportEncryptedFile(file, pwd);
     setBackupFeedback(ok ? '成功從加密備份檔還原所有排程、備忘錄與插件！' : '解密失敗，請確認密碼是否正確。');
     e.target.value = '';
+  };
+
+  const handleGenerateAndCopySyncCode = async () => {
+    const pwd = filePassphrase.trim() || passphrase.trim();
+    if (pwd.length < 4) {
+      setBackupFeedback('請先輸入至少 4 字元的備份／同步碼加密密碼。');
+      return;
+    }
+    const code = await onExportSyncCode(pwd);
+    setGeneratedSyncCode(code);
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopiedSyncCode(true);
+      window.setTimeout(() => setCopiedSyncCode(false), 2500);
+      setBackupFeedback('已產生並複製端對端加密同步碼（KAIRO-SYNC-V1），請直接貼到另一台裝置還原合併。');
+    } catch {
+      setBackupFeedback('已產生端對端加密同步碼，請選取下方文字複製到另一台裝置。');
+    }
+  };
+
+  const handleImportSyncCodeSubmit = async () => {
+    const pwd = filePassphrase.trim() || passphrase.trim();
+    if (pwd.length < 4) {
+      setBackupFeedback('請先輸入產生該同步碼時使用的加密密碼（至少 4 字元）。');
+      return;
+    }
+    if (!pasteSyncCode.trim()) {
+      setBackupFeedback('請先貼上以 KAIRO-SYNC-V1: 開頭的加密同步碼。');
+      return;
+    }
+    const ok = await onImportSyncCode(pasteSyncCode, pwd);
+    if (ok) {
+      setPasteSyncCode('');
+      setBackupFeedback('已成功解密並合併跨裝置同步碼的所有排程、備忘錄與名片！');
+    } else {
+      setBackupFeedback('同步碼解密失敗，請確認密碼與完整同步碼是否正確。');
+    }
   };
 
   return (
@@ -649,6 +715,7 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
 
             {syncAuthFeedback && (
               <p
+                role={syncAuthFeedback.type === 'error' ? 'alert' : 'status'}
                 className={`text-xs font-medium ${
                   syncAuthFeedback.type === 'error'
                     ? 'text-rose-600 dark:text-rose-400'
@@ -658,6 +725,78 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
                 {syncAuthFeedback.text}
               </p>
             )}
+
+            <div className="pt-1 border-t border-stone-200/80 dark:border-zinc-800 space-y-3">
+              <button
+                type="button"
+                aria-expanded={showConsoleGuide || Boolean(syncAuthFeedback && isEmailProviderDisabledError(syncAuthFeedback.text))}
+                onClick={() => setShowConsoleGuide((prev) => !prev)}
+                className="inline-flex items-center gap-1.5 text-xs font-medium text-stone-600 dark:text-zinc-300 hover:underline"
+              >
+                <HelpCircle className="w-3.5 h-3.5 accent-text" />
+                <span>
+                  {showConsoleGuide || (syncAuthFeedback && isEmailProviderDisabledError(syncAuthFeedback.text))
+                    ? '收合 Firebase Console 啟用步驟說明'
+                    : '遇到「尚未在 Firebase Console 啟用」？查看 4 步驟開啟教學'}
+                </span>
+              </button>
+
+              {(showConsoleGuide ||
+                (syncAuthFeedback && isEmailProviderDisabledError(syncAuthFeedback.text))) && (
+                <div className="rounded-xl border border-amber-300/80 dark:border-amber-800/70 bg-amber-50/90 dark:bg-amber-950/30 p-4 space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 text-xs font-semibold text-amber-900 dark:text-amber-200">
+                      <AlertTriangle className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                      <span>
+                        如何啟用「帳號密碼 / 序號」跨平台即時雲端同步（一次性設定）
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <a
+                        href={firebaseProvidersUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 text-xs font-medium transition-colors"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        <span>開啟 Firebase Console 驗證設定</span>
+                      </a>
+                      <button
+                        type="button"
+                        onClick={handleCopyConsoleUrl}
+                        className="inline-flex items-center gap-1 rounded-lg border border-amber-300 dark:border-amber-700 bg-white/80 dark:bg-zinc-900 px-2.5 py-1.5 text-xs font-medium text-amber-900 dark:text-amber-200 hover:bg-white"
+                      >
+                        {copiedConsoleUrl ? (
+                          <Check className="w-3.5 h-3.5 text-emerald-600" />
+                        ) : (
+                          <Copy className="w-3.5 h-3.5" />
+                        )}
+                        <span>{copiedConsoleUrl ? '已複製網址' : '複製設定網址'}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <ol className="list-decimal pl-5 space-y-1.5 text-xs text-amber-950/90 dark:text-amber-100/90 leading-relaxed">
+                    <li>
+                      使用管理專案 <span className="font-mono font-semibold">{firebaseConfig.projectId}</span> 的 Google 帳號開啟上方連結（Authentication → Sign-in method）。
+                    </li>
+                    <li>
+                      點選 <span className="font-semibold">「新增供應商 (Add new provider)」</span>，選擇原生供應商中的 <span className="font-semibold">「電子郵件/密碼 (Email/Password)」</span>。
+                    </li>
+                    <li>
+                      開啟第一項 <span className="font-semibold">「電子郵件/密碼」</span> 開關（免密碼連結保持關閉即可），點擊 <span className="font-semibold">儲存 (Save)</span>。
+                    </li>
+                    <li>
+                      回到此頁面再次點擊「建立帳號並開啟同步」或「以此序號連線」，立即完成跨裝置即時同步。
+                    </li>
+                  </ol>
+
+                  <p className="text-[11px] text-amber-900/80 dark:text-amber-200/80 border-t border-amber-200/80 dark:border-amber-800/60 pt-2">
+                    提示：若您暫時無法登入 Firebase Console，可直接利用下方 <span className="font-semibold">「免設定端對端加密同步碼 (KAIRO-SYNC-V1)」</span> 或 <span className="font-semibold">.kairo.json</span> 備份檔，無需任何雲端設定即可立即在電腦與手機之間合併同步資料。
+                  </p>
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -743,30 +882,38 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
             )}
           </div>
 
-          {/* Offline Encrypted File Archive */}
+          {/* Portable Encrypted Sync Code & Offline File Archive */}
           <div className="space-y-3">
             <h3 className="text-sm font-semibold text-stone-900 dark:text-zinc-100">
-              離線加密檔案匯出 / 還原 (.kairo.json)
+              免設定跨裝置加密同步碼與離線檔案 (.kairo.json)
             </h3>
             <p className="text-xs text-stone-600 dark:text-zinc-400">
-              不依賴特定雲端帳號，可將所有任務、備忘錄與插件打包為 AES-256-GCM 加密檔案存放於隨身碟或任意雲端硬碟。
+              不依賴雲端伺服器設定！直接產生一串 AES-256-GCM 加密同步碼（或匯出 .kairo.json），貼到另一台電腦或手機即可立即解密並智慧合併所有行程、名片與備忘錄。
             </p>
             <input
               type="password"
-              aria-label="離線檔案加密密碼"
+              aria-label="離線檔案與同步碼加密密碼"
               value={filePassphrase}
               onChange={(e) => setFilePassphrase(e.target.value)}
-              placeholder="輸入離線備份檔加密 / 解密密碼 (至少4字元)"
+              placeholder="設定或輸入加密 / 解密密碼 (至少4字元)"
               className="w-full rounded-xl border border-stone-200 dark:border-zinc-700 bg-stone-50 dark:bg-zinc-950 px-3 py-2 text-xs"
             />
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
+                onClick={handleGenerateAndCopySyncCode}
+                className="inline-flex items-center gap-1.5 rounded-xl accent-bg px-3.5 py-2 text-xs font-medium min-h-[40px]"
+              >
+                {copiedSyncCode ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                <span>{copiedSyncCode ? '已複製加密同步碼' : '產生並複製加密同步碼'}</span>
+              </button>
+              <button
+                type="button"
                 onClick={handleExportFile}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 dark:border-zinc-700 px-4 py-2 text-xs font-medium hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[40px]"
+                className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 dark:border-zinc-700 px-3.5 py-2 text-xs font-medium hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[40px]"
               >
                 <Download className="w-4 h-4 accent-text" />
-                <span>匯出加密備份檔</span>
+                <span>匯出 .kairo.json</span>
               </button>
               <input
                 ref={fileRef}
@@ -778,12 +925,59 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
               <button
                 type="button"
                 onClick={() => fileRef.current?.click()}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 dark:border-zinc-700 px-4 py-2 text-xs font-medium hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[40px]"
+                className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 dark:border-zinc-700 px-3.5 py-2 text-xs font-medium hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[40px]"
               >
                 <Upload className="w-4 h-4" />
-                <span>從加密備份檔還原</span>
+                <span>從檔案還原</span>
               </button>
             </div>
+
+            {generatedSyncCode && (
+              <div className="space-y-1">
+                <label
+                  htmlFor="generated-sync-code"
+                  className="block text-[11px] font-medium text-stone-500 dark:text-zinc-400"
+                >
+                  已加密同步碼（可複製到另一台裝置貼上合併）：
+                </label>
+                <textarea
+                  id="generated-sync-code"
+                  readOnly
+                  rows={2}
+                  value={generatedSyncCode}
+                  onFocus={(e) => e.currentTarget.select()}
+                  className="w-full rounded-xl border border-stone-200 dark:border-zinc-700 bg-stone-50 dark:bg-zinc-950 px-3 py-2 text-[11px] font-mono text-stone-700 dark:text-zinc-200"
+                />
+              </div>
+            )}
+
+            <div className="pt-2 border-t border-stone-200/80 dark:border-zinc-800 space-y-2">
+              <label
+                htmlFor="paste-sync-code"
+                className="block text-xs font-medium text-stone-700 dark:text-zinc-300"
+              >
+                從另一台裝置貼上加密同步碼立即合併：
+              </label>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <textarea
+                  id="paste-sync-code"
+                  rows={2}
+                  value={pasteSyncCode}
+                  onChange={(e) => setPasteSyncCode(e.target.value)}
+                  placeholder="貼上 KAIRO-SYNC-V1:... 加密字串"
+                  className="flex-1 rounded-xl border border-stone-200 dark:border-zinc-700 bg-stone-50 dark:bg-zinc-950 px-3 py-2 text-xs font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={handleImportSyncCodeSubmit}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-stone-200 dark:border-zinc-700 px-4 py-2 text-xs font-medium hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[40px] whitespace-nowrap self-start sm:self-stretch"
+                >
+                  <RotateCcw className="w-3.5 h-3.5 accent-text" />
+                  <span>解密並合併資料</span>
+                </button>
+              </div>
+            </div>
+
             {backupFeedback && (
               <p className="text-xs font-medium accent-text">{backupFeedback}</p>
             )}

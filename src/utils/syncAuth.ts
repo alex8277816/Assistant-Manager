@@ -155,6 +155,19 @@ export function resolveSyncIdentityLabel(
   return email;
 }
 
+export function isEmailProviderDisabledError(errorOrMessage: unknown): boolean {
+  const code =
+    typeof errorOrMessage === 'object' && errorOrMessage !== null && 'code' in errorOrMessage
+      ? String((errorOrMessage as { code: unknown }).code)
+      : '';
+  const msg = errorOrMessage instanceof Error ? errorOrMessage.message : String(errorOrMessage || '');
+  return (
+    code === 'auth/operation-not-allowed' ||
+    msg.includes('operation-not-allowed') ||
+    msg.includes('尚未在 Firebase Console 啟用')
+  );
+}
+
 export function formatAuthErrorMessage(error: unknown): string {
   const code =
     typeof error === 'object' && error !== null && 'code' in error
@@ -163,7 +176,7 @@ export function formatAuthErrorMessage(error: unknown): string {
   const msg = error instanceof Error ? error.message : String(error);
 
   if (code === 'auth/operation-not-allowed' || msg.includes('operation-not-allowed')) {
-    return '尚未在 Firebase Console 啟用「電子郵件/密碼 (Email/Password)」登入方式，請依下方提示開啟後再試。';
+    return '尚未在 Firebase Console 啟用「電子郵件/密碼 (Email/Password)」登入方式，請依下方步驟開啟後再試。';
   }
   if (code === 'auth/email-already-in-use') {
     return '此帳號或序號已存在，請改用「登入同步」或確認密碼是否正確。';

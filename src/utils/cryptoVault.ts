@@ -142,3 +142,41 @@ export async function decryptEncryptedArchive<T>(
   const json = await decryptText(key, archive.ciphertext, archive.iv);
   return JSON.parse(json) as T;
 }
+
+const SYNC_CODE_PREFIX = 'KAIRO-SYNC-V1:';
+
+export async function encodeEncryptedSyncCode(
+  passphrase: string,
+  payload: unknown,
+  itemCount: number
+): Promise<string> {
+  const archive = await createEncryptedArchive(passphrase, payload, itemCount);
+  const compact = JSON.stringify({
+    s: archive.salt,
+    i: archive.iv,
+    c: archive.ciphertext,
+  });
+  const encodedBytes = new TextEncoder().encode(compact);
+  return `${SYNC_CODE_PREFIX}${toBase64(encodedBytes)}`;
+}
+
+export async function decodeEncryptedSyncCode<T>(
+  passphrase: string,
+  rawCode: string
+): Promise<T> {
+  const trimmed = rawCode.trim();
+  if (!trimmed.startsWith(SYNC_CODE_PREFIX)) {
+    throw new Error('同步碼格式不正確，應以 KAIRO-SYNC-V1: 開頭');
+  }
+  const b64 = trimmed.slice(SYNC_CODE_PREFIX.length).trim();
+  const decodedJson = new TextDecoder().decode(fromBase64(b64));
+  const parsed = JSON.parse(decodedJson) as { s: string; i: string; c: string };
+  if (!parsed?.s || !parsed?.i || !parsed?.c) {
+    throw new Error('同步碼內容不完整');
+  }
+  return decryptEncryptedArchive<T>(passphrase, {
+    salt: parsed.s,
+    iv: parsed.i,
+    ciphertext: parsed.c,
+  });
+}

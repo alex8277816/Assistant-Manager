@@ -63,8 +63,10 @@ import {
 import {
   createEncryptedArchive,
   createVaultCheck,
+  decodeEncryptedSyncCode,
   decryptEncryptedArchive,
   deriveAesKey,
+  encodeEncryptedSyncCode,
   encryptText,
   generateSaltBase64,
   verifyVaultCheck,
@@ -1256,6 +1258,79 @@ export default function App() {
     }
   };
 
+  const handleGenerateSyncCode = async (passphrase: string): Promise<string> => {
+    const current = latestCollectionsRef.current;
+    const payload = {
+      tasks: current.tasks,
+      memos: current.memos,
+      plugins: current.plugins,
+      businessCards: current.businessCards,
+      theme,
+      voice,
+    };
+    const totalCount =
+      current.tasks.filter((t) => !t.deleted).length +
+      current.memos.filter((m) => !m.deleted).length +
+      current.businessCards.filter((c) => !c.deleted).length;
+    return encodeEncryptedSyncCode(passphrase, payload, totalCount);
+  };
+
+  const handleImportSyncCode = async (
+    rawCode: string,
+    passphrase: string
+  ): Promise<boolean> => {
+    try {
+      const restored = await decodeEncryptedSyncCode<{
+        tasks?: TaskItem[];
+        memos?: MemoItem[];
+        plugins?: WorkflowPlugin[];
+        businessCards?: BusinessCardItem[];
+        theme?: ThemeSettings;
+        voice?: VoiceSettings;
+      }>(passphrase, rawCode);
+
+      const current = latestCollectionsRef.current;
+      const syncMark = user && cryptoKey ? ('pending' as const) : ('local' as const);
+      const bump = (items?: Array<TaskItem | MemoItem | WorkflowPlugin | BusinessCardItem>) =>
+        Array.isArray(items)
+          ? items.map((item) => ({ ...item, syncStatus: syncMark }))
+          : [];
+
+      const mergedTasks = restored.tasks
+        ? mergeSyncedCollection(current.tasks, bump(restored.tasks) as TaskItem[])
+        : current.tasks;
+      const mergedMemos = restored.memos
+        ? mergeSyncedCollection(current.memos, bump(restored.memos) as MemoItem[])
+        : current.memos;
+      const mergedPlugins = restored.plugins
+        ? mergeSyncedCollection(current.plugins, bump(restored.plugins) as WorkflowPlugin[])
+        : current.plugins;
+      const mergedCards = restored.businessCards
+        ? mergeSyncedCollection(current.businessCards, bump(restored.businessCards) as BusinessCardItem[])
+        : current.businessCards;
+
+      setTasks(mergedTasks);
+      setMemos(mergedMemos);
+      setPlugins(mergedPlugins);
+      setBusinessCards(mergedCards);
+      if (restored.theme) setTheme(restored.theme);
+      if (restored.voice) setVoice(restored.voice);
+
+      if (user && cryptoKey) {
+        flushPendingItemsToCloud(user, cryptoKey, {
+          tasks: mergedTasks,
+          memos: mergedMemos,
+          plugins: mergedPlugins,
+          cards: mergedCards,
+        }).catch(() => {});
+      }
+      showToast('已成功解密並合併跨裝置加密同步碼的資料');
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   const handleSpeakBriefing = () => {
     const script = formatBriefingScript(tasks, selectedDate, Date.now());
     speakText(script, voice);
@@ -1747,6 +1822,8 @@ export default function App() {
               }}
               onExportEncryptedFile={handleExportEncryptedFile}
               onImportEncryptedFile={handleImportEncryptedFile}
+              onExportSyncCode={handleGenerateSyncCode}
+              onImportSyncCode={handleImportSyncCode}
               onUpdateTheme={(next) => {
                 setTheme(next);
                 if (user) {

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   Building2,
   Copy,
@@ -14,15 +14,17 @@ import {
   Volume2,
 } from 'lucide-react';
 import type { BusinessCardCategory, BusinessCardItem } from '../types/assistant';
+import {
+  filterBusinessCards,
+  validateAndNormalizeCardDraft,
+  type BusinessCardDraft,
+} from '../utils/cardHelpers';
 
 interface BusinessCardsViewProps {
   cards: BusinessCardItem[];
   vaultUnlocked: boolean;
   isSpeaking: boolean;
-  onSaveCard: (
-    draft: Omit<BusinessCardItem, 'id' | 'version' | 'syncStatus' | 'createdAt' | 'updatedAt'>,
-    existingId?: string
-  ) => void;
+  onSaveCard: (draft: BusinessCardDraft, existingId?: string) => void;
   onDeleteCard: (id: string) => void;
   onSpeakCard: (card: BusinessCardItem) => void;
   onStopSpeaking: () => void;
@@ -43,13 +45,7 @@ export const BusinessCardsView: React.FC<BusinessCardsViewProps> = ({
   onSpeakCard,
   onStopSpeaking,
 }) => {
-  const activeCards = useMemo(
-    () =>
-      cards
-        .filter((c) => !c.deleted)
-        .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt),
-    [cards]
-  );
+  const activeCards = useMemo(() => filterBusinessCards(cards, 'all', ''), [cards]);
 
   const [categoryFilter, setCategoryFilter] = useState<'all' | BusinessCardCategory>('all');
   const [search, setSearch] = useState('');
@@ -66,16 +62,15 @@ export const BusinessCardsView: React.FC<BusinessCardsViewProps> = ({
   const [pinned, setPinned] = useState(false);
   const [formError, setFormError] = useState('');
   const [feedback, setFeedback] = useState('');
+  const [formHighlighted, setFormHighlighted] = useState(false);
 
-  const filteredCards = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return activeCards.filter((card) => {
-      if (categoryFilter !== 'all' && card.category !== categoryFilter) return false;
-      if (!q) return true;
-      const hay = `${card.name} ${card.company} ${card.title} ${card.phone} ${card.email} ${card.notes}`.toLowerCase();
-      return hay.includes(q);
-    });
-  }, [activeCards, categoryFilter, search]);
+  const formSectionRef = useRef<HTMLElement | null>(null);
+  const nameInputRef = useRef<HTMLInputElement | null>(null);
+
+  const filteredCards = useMemo(
+    () => filterBusinessCards(cards, categoryFilter, search),
+    [cards, categoryFilter, search]
+  );
 
   const resetForm = () => {
     setEditingId(null);
@@ -90,6 +85,15 @@ export const BusinessCardsView: React.FC<BusinessCardsViewProps> = ({
     setFormError('');
   };
 
+  const handleStartNewCard = () => {
+    resetForm();
+    setFeedback('請填寫下方「姓名」後點擊儲存名片。');
+    setFormHighlighted(true);
+    window.setTimeout(() => setFormHighlighted(false), 1200);
+    formSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    window.setTimeout(() => nameInputRef.current?.focus(), 80);
+  };
+
   const loadCardIntoForm = (card: BusinessCardItem) => {
     setEditingId(card.id);
     setCategory(card.category);
@@ -102,28 +106,39 @@ export const BusinessCardsView: React.FC<BusinessCardsViewProps> = ({
     setPinned(card.pinned);
     setFormError('');
     setFeedback('');
+    formSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) {
-      setFormError('請填寫聯絡人姓名');
+    const validated = validateAndNormalizeCardDraft({
+      category,
+      name,
+      company,
+      title,
+      phone,
+      email,
+      notes,
+      pinned,
+    });
+    if (!validated.ok) {
+      setFormError(validated.error);
+      nameInputRef.current?.focus();
       return;
     }
-    onSaveCard(
-      {
-        category,
-        name: name.trim(),
-        company: company.trim(),
-        title: title.trim(),
-        phone: phone.trim(),
-        email: email.trim(),
-        notes: notes.trim(),
-        pinned,
-      },
-      editingId ?? undefined
+
+    onSaveCard(validated.draft, editingId ?? undefined);
+    if (categoryFilter !== 'all' && categoryFilter !== validated.draft.category) {
+      setCategoryFilter('all');
+    }
+    if (search.trim()) {
+      setSearch('');
+    }
+    setFeedback(
+      editingId
+        ? `已更新「${validated.draft.name}」的名片資料`
+        : `已新增「${validated.draft.name}」至名片夾`
     );
-    setFeedback(editingId ? `已更新「${name.trim()}」的名片資料` : `已新增「${name.trim()}」至名片夾`);
     resetForm();
   };
 
@@ -205,7 +220,7 @@ export const BusinessCardsView: React.FC<BusinessCardsViewProps> = ({
             </button>
             <button
               type="button"
-              onClick={resetForm}
+              onClick={handleStartNewCard}
               className="inline-flex items-center gap-1.5 rounded-xl accent-bg px-4 py-2 text-xs font-medium min-h-[40px]"
             >
               <Plus className="w-4 h-4" />
@@ -374,8 +389,13 @@ export const BusinessCardsView: React.FC<BusinessCardsViewProps> = ({
 
         {/* Right: Create / Edit Business Card Form */}
         <section
+          ref={formSectionRef}
           aria-label="編輯或新增名片"
-          className="rounded-2xl border border-stone-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5 space-y-4"
+          className={`rounded-2xl border bg-white dark:bg-zinc-900 p-5 space-y-4 transition-all ${
+            formHighlighted
+              ? 'accent-border ring-2 ring-offset-2 ring-stone-300 dark:ring-zinc-700'
+              : 'border-stone-200 dark:border-zinc-800'
+          }`}
         >
           <div className="flex items-center justify-between gap-2 pb-3 border-b border-stone-200 dark:border-zinc-800">
             <h2 className="text-base font-semibold text-stone-900 dark:text-zinc-100 flex items-center gap-2">
@@ -393,7 +413,7 @@ export const BusinessCardsView: React.FC<BusinessCardsViewProps> = ({
             )}
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-3.5">
+          <form onSubmit={handleSubmit} noValidate className="space-y-3.5">
             <div className="grid grid-cols-3 gap-2">
               {(
                 [
@@ -422,6 +442,7 @@ export const BusinessCardsView: React.FC<BusinessCardsViewProps> = ({
                 姓名 *
               </label>
               <input
+                ref={nameInputRef}
                 id="card-name"
                 type="text"
                 value={name}

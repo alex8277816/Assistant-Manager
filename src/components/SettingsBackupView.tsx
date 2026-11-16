@@ -8,6 +8,7 @@ import {
   Copy,
   Download,
   ExternalLink,
+  Hash,
   KeyRound,
   Lock,
   LogOut,
@@ -15,10 +16,12 @@ import {
   RefreshCw,
   RotateCcw,
   ShieldCheck,
+  Sparkles,
   Square,
   Trash2,
   Unlock,
   Upload,
+  UserCheck,
   Volume2,
 } from 'lucide-react';
 import type { User } from 'firebase/auth';
@@ -36,11 +39,13 @@ import {
   DGPA_TYPHOON_URL,
   TAIWAN_CITIES,
 } from '../utils/govCalendar';
+import { generateSyncSerial } from '../utils/syncAuth';
 import { PWAInstallButton } from './PWAInstallButton';
 
 interface SettingsBackupViewProps {
   user: User | null;
   authLoading: boolean;
+  syncIdentityLabel: string;
   vault: VaultState;
   theme: ThemeSettings;
   voice: VoiceSettings;
@@ -53,8 +58,14 @@ interface SettingsBackupViewProps {
   pendingSyncCount: number;
   syncingNow: boolean;
   sampleCipherPreview: { ciphertext: string; iv: string } | null;
-  onGoogleSignIn: () => Promise<void>;
-  onGoogleSignOut: () => Promise<void>;
+  onRegisterSyncAccount: (identifier: string, password: string) => Promise<{ ok: boolean; message: string }>;
+  onSignInSyncAccount: (identifier: string, password: string) => Promise<{ ok: boolean; message: string }>;
+  onConnectSyncSerial: (
+    serial: string,
+    syncPassword: string,
+    intent: 'auto' | 'create' | 'join'
+  ) => Promise<{ ok: boolean; message: string }>;
+  onSignOutSync: () => Promise<void>;
   onSyncNow: () => Promise<void>;
   onSetupOrUnlockVault: (passphrase: string) => Promise<boolean>;
   onLockVault: () => void;
@@ -85,6 +96,7 @@ const ACCENT_OPTIONS: Array<{ id: ThemeAccent; label: string; hex: string }> = [
 export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
   user,
   authLoading,
+  syncIdentityLabel,
   vault,
   theme,
   voice,
@@ -97,8 +109,10 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
   pendingSyncCount,
   syncingNow,
   sampleCipherPreview,
-  onGoogleSignIn,
-  onGoogleSignOut,
+  onRegisterSyncAccount,
+  onSignInSyncAccount,
+  onConnectSyncSerial,
+  onSignOutSync,
   onSyncNow,
   onSetupOrUnlockVault,
   onLockVault,
@@ -127,9 +141,66 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
     typeof Notification !== 'undefined' ? Notification.permission : 'unsupported'
   );
   const [copiedAppUrl, setCopiedAppUrl] = useState(false);
+
+  // Non-Google Account+Password & Sync Serial state
+  const [syncMethod, setSyncMethod] = useState<'account' | 'serial'>('account');
+  const [accountAction, setAccountAction] = useState<'signin' | 'register'>('signin');
+  const [accountId, setAccountId] = useState('');
+  const [accountPassword, setAccountPassword] = useState('');
+  const [syncSerial, setSyncSerial] = useState('');
+  const [serialPassword, setSerialPassword] = useState('');
+  const [copiedSerial, setCopiedSerial] = useState(false);
+  const [syncAuthFeedback, setSyncAuthFeedback] = useState<{
+    type: 'ok' | 'error';
+    text: string;
+  } | null>(null);
+
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   const isInIframe = typeof window !== 'undefined' && window.self !== window.top;
+
+  const handleAccountSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSyncAuthFeedback(null);
+    const res =
+      accountAction === 'register'
+        ? await onRegisterSyncAccount(accountId, accountPassword)
+        : await onSignInSyncAccount(accountId, accountPassword);
+    setSyncAuthFeedback({ type: res.ok ? 'ok' : 'error', text: res.message });
+    if (res.ok) {
+      setAccountPassword('');
+    }
+  };
+
+  const handleSerialSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSyncAuthFeedback(null);
+    const res = await onConnectSyncSerial(syncSerial, serialPassword, 'auto');
+    setSyncAuthFeedback({ type: res.ok ? 'ok' : 'error', text: res.message });
+    if (res.ok) {
+      setSerialPassword('');
+    }
+  };
+
+  const handleGenerateSerial = () => {
+    const generated = generateSyncSerial();
+    setSyncSerial(generated);
+    setSyncAuthFeedback({
+      type: 'ok',
+      text: '已產生高強度同步序號，請妥善保存此序號並設定至少 6 字元的配對密碼，點擊下方按鈕即可啟用同步。',
+    });
+  };
+
+  const handleCopySerial = async () => {
+    if (!syncSerial.trim()) return;
+    try {
+      await navigator.clipboard.writeText(syncSerial.trim());
+      setCopiedSerial(true);
+      window.setTimeout(() => setCopiedSerial(false), 2000);
+    } catch {
+      // ignore clipboard error
+    }
+  };
 
   const handleCopyAppUrl = async () => {
     if (typeof window === 'undefined') return;
@@ -327,13 +398,13 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
         </section>
       </div>
 
-      {/* 3. Cloud Sync & Backup / Restore */}
+      {/* 3. Cloud Sync & Backup / Restore (Account+Password or Sync Serial, Zero Google Dependency) */}
       <section className="rounded-2xl border border-stone-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5 space-y-5">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-stone-200 dark:border-zinc-800">
           <div>
             <h2 className="text-base font-semibold text-stone-900 dark:text-zinc-100 flex items-center gap-2">
               <Cloud className="w-4 h-4 accent-text" />
-              <span>跨平台雲端同步與設備還原備份</span>
+              <span>跨平台同步空間（帳號密碼 / 同步序號）</span>
             </h2>
             <p className="text-xs text-stone-600 dark:text-zinc-400 mt-1 tabular-nums">
               {syncStatusText}
@@ -341,45 +412,254 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
-            {user ? (
-              <div className="flex flex-wrap items-center gap-2.5">
-                <span className="text-xs text-stone-600 dark:text-zinc-300 truncate max-w-[200px]">
-                  {user.email || user.displayName}
-                </span>
-                {vault.unlocked && (
-                  <button
-                    type="button"
-                    disabled={syncingNow}
-                    onClick={() => onSyncNow()}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 dark:border-zinc-700 px-3.5 py-2 text-xs font-medium hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[40px] disabled:opacity-60"
-                  >
-                    <RefreshCw className={`w-3.5 h-3.5 accent-text ${syncingNow ? 'animate-spin' : ''}`} />
-                    <span>{syncingNow ? '同步中...' : '立即雙向同步'}</span>
-                  </button>
-                )}
+          {user && (
+            <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+              <span className="inline-flex items-center gap-1.5 text-xs font-mono text-stone-700 dark:text-zinc-200 bg-stone-100 dark:bg-zinc-800 px-3 py-1.5 rounded-lg max-w-[220px] truncate">
+                <UserCheck className="w-3.5 h-3.5 accent-text shrink-0" />
+                <span className="truncate">{syncIdentityLabel}</span>
+              </span>
+              {vault.unlocked && (
                 <button
                   type="button"
-                  onClick={onGoogleSignOut}
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 dark:border-zinc-700 px-3.5 py-2 text-xs font-medium hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[40px]"
+                  disabled={syncingNow}
+                  onClick={() => onSyncNow()}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 dark:border-zinc-700 px-3.5 py-2 text-xs font-medium hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[40px] disabled:opacity-60"
                 >
-                  <LogOut className="w-3.5 h-3.5" />
-                  <span>登出雲端</span>
+                  <RefreshCw className={`w-3.5 h-3.5 accent-text ${syncingNow ? 'animate-spin' : ''}`} />
+                  <span>{syncingNow ? '同步中...' : '立即雙向同步'}</span>
                 </button>
-              </div>
-            ) : (
+              )}
               <button
                 type="button"
-                disabled={authLoading}
-                onClick={onGoogleSignIn}
-                className="inline-flex items-center gap-2 rounded-xl accent-bg px-4 py-2.5 text-xs font-medium min-h-[44px] disabled:opacity-60"
+                onClick={async () => {
+                  await onSignOutSync();
+                  setSyncAuthFeedback({ type: 'ok', text: '已登出同步空間，本機離線資料仍完整保留。' });
+                }}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 dark:border-zinc-700 px-3.5 py-2 text-xs font-medium hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[40px]"
               >
-                <Cloud className="w-4 h-4" />
-                <span>{authLoading ? '連線中...' : '登入 Google 開啟跨裝置雲端同步'}</span>
+                <LogOut className="w-3.5 h-3.5" />
+                <span>登出同步</span>
               </button>
+            </div>
+          )}
+        </div>
+
+        {!user && (
+          <div className="rounded-xl border border-stone-200 dark:border-zinc-800 bg-stone-50 dark:bg-zinc-950 p-4 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <p className="text-xs text-stone-600 dark:text-zinc-300 leading-relaxed">
+                透過「自訂帳號密碼」或一組高強度「同步序號 + 配對密碼」，讓電腦、手機與平板維持一致且經過 AES-256-GCM 端對端加密的資料同步。
+              </p>
+              <div className="inline-flex p-1 rounded-xl bg-stone-200/70 dark:bg-zinc-800 shrink-0 self-start">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSyncMethod('account');
+                    setSyncAuthFeedback(null);
+                  }}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors min-h-[34px] whitespace-nowrap ${
+                    syncMethod === 'account'
+                      ? 'bg-white dark:bg-zinc-900 text-stone-900 dark:text-zinc-100 shadow-xs'
+                      : 'text-stone-600 dark:text-zinc-400'
+                  }`}
+                >
+                  <UserCheck className="w-3.5 h-3.5" />
+                  <span>帳號密碼同步</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSyncMethod('serial');
+                    setSyncAuthFeedback(null);
+                  }}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors min-h-[34px] whitespace-nowrap ${
+                    syncMethod === 'serial'
+                      ? 'bg-white dark:bg-zinc-900 text-stone-900 dark:text-zinc-100 shadow-xs'
+                      : 'text-stone-600 dark:text-zinc-400'
+                  }`}
+                >
+                  <Hash className="w-3.5 h-3.5" />
+                  <span>同步序號配對</span>
+                </button>
+              </div>
+            </div>
+
+            {syncMethod === 'account' ? (
+              <form onSubmit={handleAccountSubmit} noValidate className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setAccountAction('signin')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border min-h-[34px] ${
+                      accountAction === 'signin'
+                        ? 'accent-border accent-soft-bg accent-text'
+                        : 'border-stone-200 dark:border-zinc-700 text-stone-600 dark:text-zinc-400'
+                    }`}
+                  >
+                    已有帳號・登入同步
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAccountAction('register')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border min-h-[34px] ${
+                      accountAction === 'register'
+                        ? 'accent-border accent-soft-bg accent-text'
+                        : 'border-stone-200 dark:border-zinc-700 text-stone-600 dark:text-zinc-400'
+                    }`}
+                  >
+                    註冊新同步帳號
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label
+                      htmlFor="sync-account-id"
+                      className="block text-xs font-medium text-stone-700 dark:text-zinc-300 mb-1"
+                    >
+                      同步帳號 ID 或電子信箱
+                    </label>
+                    <input
+                      id="sync-account-id"
+                      type="text"
+                      autoComplete="username"
+                      value={accountId}
+                      onChange={(e) => setAccountId(e.target.value)}
+                      placeholder="例如：alex2026 或 name@domain.com"
+                      className="w-full rounded-xl border border-stone-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3.5 py-2 text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="sync-account-password"
+                      className="block text-xs font-medium text-stone-700 dark:text-zinc-300 mb-1"
+                    >
+                      同步密碼（至少 6 字元，同時用於端對端加密）
+                    </label>
+                    <input
+                      id="sync-account-password"
+                      type="password"
+                      autoComplete={accountAction === 'register' ? 'new-password' : 'current-password'}
+                      value={accountPassword}
+                      onChange={(e) => setAccountPassword(e.target.value)}
+                      placeholder="輸入密碼（至少 6 字元）"
+                      className="w-full rounded-xl border border-stone-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3.5 py-2 text-xs"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <p className="text-[11px] text-stone-500 dark:text-zinc-400">
+                    註冊或登入後將自動解鎖或驗證您的 AES-256-GCM 加密金鑰庫，無需第三方 Google 憑證。
+                  </p>
+                  <button
+                    type="submit"
+                    disabled={authLoading}
+                    className="inline-flex items-center gap-1.5 rounded-xl accent-bg px-4 py-2 text-xs font-medium min-h-[40px] disabled:opacity-60 whitespace-nowrap"
+                  >
+                    <Cloud className="w-4 h-4" />
+                    <span>
+                      {authLoading
+                        ? '連線驗證中...'
+                        : accountAction === 'register'
+                          ? '建立帳號並開啟同步'
+                          : '登入並同步跨平台資料'}
+                    </span>
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <form onSubmit={handleSerialSubmit} noValidate className="space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-[1.35fr_1fr] gap-3">
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label
+                        htmlFor="sync-serial-input"
+                        className="block text-xs font-medium text-stone-700 dark:text-zinc-300"
+                      >
+                        跨裝置同步序號
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={handleGenerateSerial}
+                          className="inline-flex items-center gap-1 text-[11px] font-medium accent-text hover:underline"
+                        >
+                          <Sparkles className="w-3 h-3" />
+                          <span>產生新同步序號</span>
+                        </button>
+                        {syncSerial.trim() && (
+                          <button
+                            type="button"
+                            onClick={handleCopySerial}
+                            className="inline-flex items-center gap-1 text-[11px] text-stone-600 dark:text-zinc-300 hover:underline"
+                          >
+                            {copiedSerial ? (
+                              <Check className="w-3 h-3 accent-text" />
+                            ) : (
+                              <Copy className="w-3 h-3" />
+                            )}
+                            <span>{copiedSerial ? '已複製' : '複製序號'}</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <input
+                      id="sync-serial-input"
+                      type="text"
+                      value={syncSerial}
+                      onChange={(e) => setSyncSerial(e.target.value)}
+                      placeholder="KAIRO-XXXX-XXXX-XXXX-XXXX"
+                      className="w-full rounded-xl border border-stone-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3.5 py-2 text-xs font-mono uppercase tracking-wide"
+                    />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="sync-serial-password"
+                      className="block text-xs font-medium text-stone-700 dark:text-zinc-300 mb-1"
+                    >
+                      序號配對加密密碼（至少 6 字元）
+                    </label>
+                    <input
+                      id="sync-serial-password"
+                      type="password"
+                      value={serialPassword}
+                      onChange={(e) => setSerialPassword(e.target.value)}
+                      placeholder="設定或輸入配對密碼"
+                      className="w-full rounded-xl border border-stone-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3.5 py-2 text-xs"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <p className="text-[11px] text-stone-500 dark:text-zinc-400">
+                    無需填寫信箱或任何個人資料：第一台裝置產生序號配對後，在其他電腦或手機輸入相同序號與密碼即可雙向同步。
+                  </p>
+                  <button
+                    type="submit"
+                    disabled={authLoading}
+                    className="inline-flex items-center gap-1.5 rounded-xl accent-bg px-4 py-2 text-xs font-medium min-h-[40px] disabled:opacity-60 whitespace-nowrap"
+                  >
+                    <Hash className="w-4 h-4" />
+                    <span>{authLoading ? '配對連線中...' : '以此序號連線 / 配對同步'}</span>
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {syncAuthFeedback && (
+              <p
+                className={`text-xs font-medium ${
+                  syncAuthFeedback.type === 'error'
+                    ? 'text-rose-600 dark:text-rose-400'
+                    : 'accent-text'
+                }`}
+              >
+                {syncAuthFeedback.text}
+              </p>
             )}
           </div>
-        </div>
+        )}
 
         {/* Cloud Snapshot Controls */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -408,7 +688,7 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
             </div>
             {(!user || !vault.unlocked) && (
               <p className="text-xs text-stone-500 dark:text-zinc-400">
-                提示：請先登入 Google 帳號並解鎖上方「端對端加密金鑰庫」，即可建立與還原雲端備份。
+                提示：請先透過上方「帳號密碼」或「同步序號」連線同步空間並解鎖金鑰庫，即可建立與還原雲端快照。
               </p>
             )}
 

@@ -20,8 +20,9 @@ test('firestore.rules covers every collection defined in firebase-blueprint.json
   assert.match(rules, /match \/backups\/\{backupId\}/);
 });
 
-test('firestore.rules enforces email_verified, isValidId, hasOnly, and request.time invariants', () => {
-  assert.match(rules, /request\.auth\.token\.email_verified == true/);
+test('firestore.rules enforces authenticated owner UID, isValidId, hasOnly, and request.time invariants', () => {
+  assert.match(rules, /request\.auth != null/);
+  assert.match(rules, /request\.auth\.uid == userId/);
   assert.match(rules, /function isValidId\(id\)/);
   assert.match(rules, /data\.keys\(\)\.hasOnly\(/);
   assert.match(rules, /affectedKeys\(\)\.hasOnly\(/);

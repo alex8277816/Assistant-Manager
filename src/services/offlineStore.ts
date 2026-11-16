@@ -158,7 +158,7 @@ export function createSeedWorkspace(): PersistedWorkspace {
     {
       id: 'seed-memo-1',
       title: '跨裝置切換與安全檢查清單',
-      content: '更換手機或電腦時，先於設定頁執行「雲端加密備份」，在新裝置登入同一帳號並輸入端對端加密金鑰密碼即可無縫還原所有行程與筆記。',
+      content: '更換手機或電腦時，只要於「備份與主題」輸入相同的同步帳號密碼或同步序號＋配對密碼，即可自動同步加密排程、備忘錄與名片資料。',
       tags: ['工作', '開發'],
       pinned: true,
       checklist: [

@@ -33,7 +33,21 @@ import {
   mergeSyncedCollection,
   SEED_BASE_TIMESTAMP,
 } from './syncMerge';
-import type { MemoItem, TaskItem, WorkflowPlugin } from '../types/assistant';
+import {
+  deriveSerialAuthCredentials,
+  formatAuthErrorMessage,
+  generateSyncSerial,
+  maskSyncSerial,
+  normalizeAccountIdentifier,
+  normalizeSyncSerial,
+  resolveSyncIdentityLabel,
+} from './syncAuth';
+import {
+  buildNewBusinessCard,
+  filterBusinessCards,
+  validateAndNormalizeCardDraft,
+} from './cardHelpers';
+import type { BusinessCardItem, MemoItem, TaskItem, WorkflowPlugin } from '../types/assistant';
 
 const BASE_DATE = '2026-11-12';
 
@@ -346,7 +360,6 @@ test('syncMerge converges cross-platform edits via LWW and avoids pushing untouc
   assert.equal(merged.find((t) => t.id === 'seed-task-1')?.syncStatus, 'synced');
   assert.equal(merged.find((t) => t.id === 'task-offline-1')?.syncStatus, 'pending');
 
-  // Untouched seed-task-2 on a second device should NOT be pushed when cloud already has tasks
   const untouchedSeed2 = makeTask({
     id: 'seed-task-2',
     updatedAt: SEED_BASE_TIMESTAMP,
@@ -361,8 +374,80 @@ test('syncMerge converges cross-platform edits via LWW and avoids pushing untouc
     ['task-offline-1']
   );
 
-  // When cloud is empty (brand-new vault), initial seeds ARE pushed
   const initialPush = findItemsNeedingPush([untouchedSeed, untouchedSeed2], []);
   assert.equal(initialPush.length, 2);
 });
 
+test('syncAuth normalizes custom accounts, generates & derives deterministic serial credentials', async () => {
+  const custom = normalizeAccountIdentifier('Alex_2026');
+  assert.equal(custom.authEmail, 'acct-alex_2026@account.kairo.local');
+  assert.equal(custom.displayLabel, 'alex_2026');
+  assert.equal(custom.isCustomId, true);
+
+  const email = normalizeAccountIdentifier('User@Example.TW');
+  assert.equal(email.authEmail, 'user@example.tw');
+  assert.equal(email.isCustomId, false);
+
+  assert.throws(() => normalizeAccountIdentifier('ab'));
+
+  const serial = generateSyncSerial();
+  assert.match(serial, /^KAIRO-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}$/);
+  assert.equal(normalizeSyncSerial(serial.toLowerCase().replace(/-/g, ' ')), serial);
+  assert.match(maskSyncSerial(serial), /^KAIRO-[A-F0-9]{4}-••••-[A-F0-9]{4}$/);
+
+  const cred1 = await deriveSerialAuthCredentials(serial, 'syncPass88');
+  const cred2 = await deriveSerialAuthCredentials(serial.toLowerCase(), 'syncPass88');
+  const credDiffPwd = await deriveSerialAuthCredentials(serial, 'otherPass99');
+  assert.equal(cred1.authEmail, cred2.authEmail);
+  assert.equal(cred1.authPassword, cred2.authPassword);
+  assert.notEqual(cred1.authPassword, credDiffPwd.authPassword);
+
+  assert.equal(resolveSyncIdentityLabel(custom.authEmail, null), 'alex_2026');
+  assert.match(formatAuthErrorMessage({ code: 'auth/operation-not-allowed' }), /Email\/Password/);
+});
+
+test('cardHelpers validates, builds, and filters business cards cleanly', () => {
+  const invalidEmpty = validateAndNormalizeCardDraft({
+    category: 'client',
+    name: '   ',
+    company: 'Test',
+    title: '',
+    phone: '',
+    email: '',
+    notes: '',
+    pinned: false,
+  });
+  assert.equal(invalidEmpty.ok, false);
+
+  const invalidEmail = validateAndNormalizeCardDraft({
+    category: 'client',
+    name: '張小美',
+    company: '台積創新',
+    title: '',
+    phone: '',
+    email: 'not-an-email',
+    notes: '',
+    pinned: false,
+  });
+  assert.equal(invalidEmail.ok, false);
+
+  const valid = validateAndNormalizeCardDraft({
+    category: 'client',
+    name: '  張小美 ',
+    company: ' 台積創新 ',
+    title: '業務經理',
+    phone: '0988-111-222',
+    email: '',
+    notes: '合作夥伴',
+    pinned: true,
+  });
+  assert.equal(valid.ok, true);
+  if (valid.ok) {
+    const created: BusinessCardItem = buildNewBusinessCard(valid.draft, 5000, 'local');
+    assert.equal(created.name, '張小美');
+    assert.equal(created.version, 1);
+    const list = filterBusinessCards([created], 'client', '台積');
+    assert.equal(list.length, 1);
+    assert.equal(list[0].id, created.id);
+  }
+});

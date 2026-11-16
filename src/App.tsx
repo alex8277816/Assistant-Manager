@@ -18,7 +18,6 @@ import {
   type BusinessCardItem,
   type CloudBackupRecord,
   type FloatingNotificationItem,
-  type GoogleCalendarEventItem,
   type GovSettings,
   type GovSyncCache,
   type MainTab,
@@ -37,18 +36,16 @@ import {
   saveWorkspaceToOffline,
 } from './services/offlineStore';
 import {
-  connectGoogleCalendarPopup,
+  connectWithSyncSerial,
   createCloudBackupSnapshot,
   deleteCloudBackupSnapshot,
-  disconnectGoogleCalendarToken,
   fetchUserVaultMeta,
-  getGoogleCalendarAccessToken,
   listCloudBackupSnapshots,
   pushEncryptedSyncItem,
-  signInWithGoogle,
-  signOutGoogle,
+  registerSyncAccount,
+  signInSyncAccount,
+  signOutSyncSession,
   subscribeAuth,
-  subscribeCalendarToken,
   subscribeEncryptedSyncItems,
   subscribeUserVaultMeta,
   updateRemoteThemePrefs,
@@ -64,12 +61,6 @@ import {
   sendSystemNotification,
 } from './services/notificationService';
 import {
-  createGoogleCalendarEvent,
-  deleteGoogleCalendarEvent,
-  fetchGoogleCalendarEvents,
-  updateGoogleCalendarEvent,
-} from './services/googleCalendarService';
-import {
   createEncryptedArchive,
   createVaultCheck,
   decryptEncryptedArchive,
@@ -81,6 +72,12 @@ import {
 } from './utils/cryptoVault';
 import { parseQuickTaskInput } from './utils/smartEngine';
 import { findItemsNeedingPush, mergeSyncedCollection } from './utils/syncMerge';
+import { buildNewBusinessCard, type BusinessCardDraft } from './utils/cardHelpers';
+import {
+  loadSyncIdentityHint,
+  resolveSyncIdentityLabel,
+  type SyncIdentityHint,
+} from './utils/syncAuth';
 import { applyWorkflowPlugins } from './utils/pluginEngine';
 import {
   buildReminderTriggerKey,
@@ -166,10 +163,10 @@ export default function App() {
 
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
+  const [syncIdentityHint, setSyncIdentityHint] = useState<SyncIdentityHint | null>(() =>
+    loadSyncIdentityHint()
+  );
   const [cloudBackups, setCloudBackups] = useState<CloudBackupRecord[]>([]);
-  const [googleCalendarToken, setGoogleCalendarToken] = useState<string | null>(null);
-  const [googleCalendarEvents, setGoogleCalendarEvents] = useState<GoogleCalendarEventItem[]>([]);
-  const [googleCalendarLoading, setGoogleCalendarLoading] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
 
   const [editingTask, setEditingTask] = useState<TaskItem | null>(null);
@@ -234,7 +231,6 @@ export default function App() {
       setLoaded(true);
     });
     const unsubSpeak = subscribeSpeakingState((s) => setIsSpeaking(s.isSpeaking));
-    const unsubCalToken = subscribeCalendarToken((t) => setGoogleCalendarToken(t));
 
     // Same-device cross-tab / installed PWA window sync via BroadcastChannel
     let channel: BroadcastChannel | null = null;
@@ -260,7 +256,6 @@ export default function App() {
     return () => {
       active = false;
       unsubSpeak();
-      unsubCalToken();
       channel?.close();
     };
   }, []);
@@ -778,19 +773,18 @@ export default function App() {
   ) => {
     const now = Date.now();
     if (existingId) {
-      let updatedItem: TaskItem | null = null;
-      setTasks((prev) =>
-        prev.map((t) => {
-          if (t.id !== existingId) return t;
-          updatedItem = {
-            ...t,
+      const existing = latestCollectionsRef.current.tasks.find((t) => t.id === existingId);
+      const updatedItem: TaskItem | null = existing
+        ? {
+            ...existing,
             ...draft,
-            version: t.version + 1,
+            version: existing.version + 1,
             syncStatus: user && cryptoKey ? 'pending' : 'local',
             updatedAt: now,
-          };
-          return updatedItem;
-        })
+          }
+        : null;
+      setTasks((prev) =>
+        prev.map((t) => (t.id === existingId && updatedItem ? updatedItem : t))
       );
       if (updatedItem) syncSingleItemToCloud('task', updatedItem);
       showToast('已更新排程項目');
@@ -815,14 +809,11 @@ export default function App() {
 
   const handleDeleteTask = (id: string) => {
     const now = Date.now();
-    let target: TaskItem | null = null;
-    setTasks((prev) =>
-      prev.map((t) => {
-        if (t.id !== id) return t;
-        target = { ...t, deleted: true, version: t.version + 1, updatedAt: now };
-        return target;
-      })
-    );
+    const existing = latestCollectionsRef.current.tasks.find((t) => t.id === id);
+    const target: TaskItem | null = existing
+      ? { ...existing, deleted: true, version: existing.version + 1, updatedAt: now }
+      : null;
+    setTasks((prev) => prev.map((t) => (t.id === id && target ? target : t)));
     if (target) syncSingleItemToCloud('task', target);
     setIsTaskModalOpen(false);
     setEditingTask(null);
@@ -831,25 +822,21 @@ export default function App() {
 
   const handleToggleTask = (id: string) => {
     const now = Date.now();
-    let changed: TaskItem | null = null;
-    setTasks((prev) =>
-      prev.map((t) => {
-        if (t.id !== id) return t;
-        changed = {
-          ...t,
-          completed: !t.completed,
-          version: t.version + 1,
+    const existing = latestCollectionsRef.current.tasks.find((t) => t.id === id);
+    const changed: TaskItem | null = existing
+      ? {
+          ...existing,
+          completed: !existing.completed,
+          version: existing.version + 1,
           syncStatus: user && cryptoKey ? 'pending' : 'local',
           updatedAt: now,
-        };
-        return changed;
-      })
-    );
+        }
+      : null;
+    setTasks((prev) => prev.map((t) => (t.id === id && changed ? changed : t)));
     if (changed) {
-      const finalTask: TaskItem = changed;
-      syncSingleItemToCloud('task', finalTask);
-      if (finalTask.completed) {
-        dispatchWebhookIfEnabled('task.completed', { id: finalTask.id, title: finalTask.title });
+      syncSingleItemToCloud('task', changed);
+      if (changed.completed) {
+        dispatchWebhookIfEnabled('task.completed', { id: changed.id, title: changed.title });
       }
     }
     setActiveAlerts((prev) => prev.filter((a) => a.taskId !== id));
@@ -857,20 +844,17 @@ export default function App() {
 
   const handleRescheduleTask = (taskId: string, newDate: string, newTime?: string) => {
     const now = Date.now();
-    let changed: TaskItem | null = null;
-    setTasks((prev) =>
-      prev.map((t) => {
-        if (t.id !== taskId) return t;
-        changed = {
-          ...t,
+    const existing = latestCollectionsRef.current.tasks.find((t) => t.id === taskId);
+    const changed: TaskItem | null = existing
+      ? {
+          ...existing,
           dueDate: newDate,
-          startTime: newTime ?? t.startTime,
-          version: t.version + 1,
+          startTime: newTime ?? existing.startTime,
+          version: existing.version + 1,
           updatedAt: now,
-        };
-        return changed;
-      })
-    );
+        }
+      : null;
+    setTasks((prev) => prev.map((t) => (t.id === taskId && changed ? changed : t)));
     if (changed) syncSingleItemToCloud('task', changed);
     showToast(`已調整排程至 ${newDate}${newTime ? ` ${newTime}` : ''}`);
   };
@@ -907,14 +891,11 @@ export default function App() {
   ) => {
     const now = Date.now();
     if (existingId) {
-      let updated: MemoItem | null = null;
-      setMemos((prev) =>
-        prev.map((m) => {
-          if (m.id !== existingId) return m;
-          updated = { ...m, ...draft, version: m.version + 1, updatedAt: now };
-          return updated;
-        })
-      );
+      const existing = latestCollectionsRef.current.memos.find((m) => m.id === existingId);
+      const updated: MemoItem | null = existing
+        ? { ...existing, ...draft, version: existing.version + 1, updatedAt: now }
+        : null;
+      setMemos((prev) => prev.map((m) => (m.id === existingId && updated ? updated : m)));
       if (updated) syncSingleItemToCloud('memo', updated);
     } else {
       const created: MemoItem = {
@@ -932,44 +913,40 @@ export default function App() {
 
   const handleDeleteMemo = (id: string) => {
     const now = Date.now();
-    let deletedMemo: MemoItem | null = null;
-    setMemos((prev) =>
-      prev.map((m) => {
-        if (m.id !== id) return m;
-        deletedMemo = { ...m, deleted: true, version: m.version + 1, updatedAt: now };
-        return deletedMemo;
-      })
-    );
+    const existing = latestCollectionsRef.current.memos.find((m) => m.id === id);
+    const deletedMemo: MemoItem | null = existing
+      ? { ...existing, deleted: true, version: existing.version + 1, updatedAt: now }
+      : null;
+    setMemos((prev) => prev.map((m) => (m.id === id && deletedMemo ? deletedMemo : m)));
     if (deletedMemo) syncSingleItemToCloud('memo', deletedMemo);
     showToast('已刪除加密備忘錄');
   };
 
   // Business Card CRUD
-  const handleSaveCard = (
-    draft: Omit<BusinessCardItem, 'id' | 'version' | 'syncStatus' | 'createdAt' | 'updatedAt'>,
-    existingId?: string
-  ) => {
+  const handleSaveCard = (draft: BusinessCardDraft, existingId?: string) => {
     const now = Date.now();
     if (existingId) {
-      let updated: BusinessCardItem | null = null;
+      const existing = latestCollectionsRef.current.businessCards.find((c) => c.id === existingId);
+      const updated: BusinessCardItem | null = existing
+        ? {
+            ...existing,
+            ...draft,
+            version: existing.version + 1,
+            syncStatus: user && cryptoKey ? 'pending' : 'local',
+            updatedAt: now,
+          }
+        : null;
       setBusinessCards((prev) =>
-        prev.map((c) => {
-          if (c.id !== existingId) return c;
-          updated = { ...c, ...draft, version: c.version + 1, updatedAt: now };
-          return updated;
-        })
+        prev.map((c) => (c.id === existingId && updated ? updated : c))
       );
       if (updated) syncSingleItemToCloud('card', updated);
       showToast(`已更新「${draft.name}」名片`);
     } else {
-      const created: BusinessCardItem = {
-        ...draft,
-        id: `card-${now}-${Math.random().toString(36).slice(2, 6)}`,
-        version: 1,
-        syncStatus: user && cryptoKey ? 'pending' : 'local',
-        createdAt: now,
-        updatedAt: now,
-      };
+      const created = buildNewBusinessCard(
+        draft,
+        now,
+        user && cryptoKey ? 'pending' : 'local'
+      );
       setBusinessCards((prev) => [created, ...prev]);
       syncSingleItemToCloud('card', created);
       showToast(`已新增「${created.name}」名片`);
@@ -978,163 +955,65 @@ export default function App() {
 
   const handleDeleteCard = (id: string) => {
     const now = Date.now();
-    let deletedCard: BusinessCardItem | null = null;
+    const existing = latestCollectionsRef.current.businessCards.find((c) => c.id === id);
+    const deletedCard: BusinessCardItem | null = existing
+      ? { ...existing, deleted: true, version: existing.version + 1, updatedAt: now }
+      : null;
     setBusinessCards((prev) =>
-      prev.map((c) => {
-        if (c.id !== id) return c;
-        deletedCard = { ...c, deleted: true, version: c.version + 1, updatedAt: now };
-        return deletedCard;
-      })
+      prev.map((c) => (c.id === id && deletedCard ? deletedCard : c))
     );
     if (deletedCard) syncSingleItemToCloud('card', deletedCard);
     showToast('已刪除名片');
   };
 
-  // Google Calendar Connection & Sync Handlers
-  const handleLoadGoogleCalendarEvents = useCallback(async () => {
-    const token = getGoogleCalendarAccessToken();
-    if (!token) {
-      showToast('請先連結 Google 行事曆');
-      return;
-    }
-    setGoogleCalendarLoading(true);
-    try {
-      const now = new Date();
-      const timeMin = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-      const timeMax = new Date(now.getFullYear(), now.getMonth() + 2, 0, 23, 59, 59).toISOString();
-      const events = await fetchGoogleCalendarEvents(token, timeMin, timeMax);
-      setGoogleCalendarEvents(events);
-      showToast(`已從 Google 行事曆載入 ${events.length} 筆事件`);
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : '載入 Google 行事曆失敗');
-    } finally {
-      setGoogleCalendarLoading(false);
-    }
-  }, [showToast]);
-
-  const handleConnectGoogleCalendar = async () => {
-    setGoogleCalendarLoading(true);
-    try {
-      const res = await connectGoogleCalendarPopup();
-      setGoogleCalendarToken(res.accessToken);
-      const now = new Date();
-      const timeMin = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-      const timeMax = new Date(now.getFullYear(), now.getMonth() + 2, 0, 23, 59, 59).toISOString();
-      const events = await fetchGoogleCalendarEvents(res.accessToken, timeMin, timeMax);
-      setGoogleCalendarEvents(events);
-      pushFloatingNotification({
-        id: 'google-calendar-connected',
-        kind: 'calendar',
-        title: '已連結 Google 行事曆',
-        body: `成功同步近期 ${events.length} 筆 Google 行事曆事件`,
-      });
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Google 行事曆授權取消或失敗');
-    } finally {
-      setGoogleCalendarLoading(false);
-    }
-  };
-
-  const handleImportGoogleEventsToTasks = (events: GoogleCalendarEventItem[]): number => {
-    const existingGoogleIds = new Set(
-      tasks.filter((t) => !t.deleted && t.googleEventId).map((t) => t.googleEventId!)
-    );
-    const now = Date.now();
-    const additions: TaskItem[] = [];
-    for (const ev of events) {
-      if (existingGoogleIds.has(ev.id)) continue;
-      additions.push({
-        id: `gcal-${now}-${Math.random().toString(36).slice(2, 6)}`,
-        title: ev.summary,
-        notes: [ev.description, ev.location ? `地點：${ev.location}` : ''].filter(Boolean).join('\n'),
-        dueDate: ev.startDate,
-        startTime: ev.startTime,
-        endTime: ev.endTime,
-        isMeeting: Boolean(ev.startTime),
-        priority: ev.startTime ? 'high' : 'medium',
-        tags: ['Google行事曆'],
-        completed: false,
-        reminderMinutes: ev.startTime ? 15 : -1,
-        voiceReminder: true,
-        googleEventId: ev.id,
-        version: 1,
-        syncStatus: user && cryptoKey ? 'pending' : 'local',
-        createdAt: now,
-        updatedAt: now,
-      });
-    }
-    if (additions.length > 0) {
-      setTasks((prev) => [...additions, ...prev]);
-      additions.forEach((t) => syncSingleItemToCloud('task', t));
-    }
-    return additions.length;
-  };
-
-  const handlePushTasksToGoogleCalendar = async (tasksToPush: TaskItem[]): Promise<number> => {
-    const token = getGoogleCalendarAccessToken();
-    if (!token) {
-      showToast('Google 行事曆授權已過期，請重新連結');
-      return 0;
-    }
-    setGoogleCalendarLoading(true);
-    let syncedCount = 0;
-    const idUpdates = new Map<string, string>();
-    try {
-      for (const t of tasksToPush) {
-        if (t.googleEventId) {
-          await updateGoogleCalendarEvent(token, t.googleEventId, t);
-          syncedCount += 1;
-        } else {
-          const created = await createGoogleCalendarEvent(token, t);
-          idUpdates.set(t.id, created.id);
-          syncedCount += 1;
-        }
-      }
-      if (idUpdates.size > 0) {
-        setTasks((prev) =>
-          prev.map((t) => {
-            const gid = idUpdates.get(t.id);
-            if (!gid) return t;
-            const updated = { ...t, googleEventId: gid, version: t.version + 1, updatedAt: Date.now() };
-            syncSingleItemToCloud('task', updated);
-            return updated;
-          })
-        );
-      }
-      await handleLoadGoogleCalendarEvents();
-    } finally {
-      setGoogleCalendarLoading(false);
-    }
-    return syncedCount;
-  };
-
-  const handleDeleteGoogleCalendarEvent = async (eventId: string) => {
-    const token = getGoogleCalendarAccessToken();
-    if (!token) return;
-    setGoogleCalendarLoading(true);
-    try {
-      await deleteGoogleCalendarEvent(token, eventId);
-      setGoogleCalendarEvents((prev) => prev.filter((e) => e.id !== eventId));
-      setTasks((prev) =>
-        prev.map((t) =>
-          t.googleEventId === eventId ? { ...t, googleEventId: undefined, updatedAt: Date.now() } : t
-        )
-      );
-      showToast('已從 Google 行事曆移除該事件');
-    } finally {
-      setGoogleCalendarLoading(false);
-    }
-  };
-
   // Vault & Backup Handlers
-  const handleSetupOrUnlockVault = async (passphrase: string): Promise<boolean> => {
-    if (vault.initialized && vault.salt && vault.checkCipher && vault.checkIv) {
-      const key = await deriveAesKey(passphrase, vault.salt);
-      const valid = await verifyVaultCheck(key, vault.checkCipher, vault.checkIv);
+  const handleSetupOrUnlockVault = async (
+    passphrase: string,
+    targetUser?: User
+  ): Promise<boolean> => {
+    const activeUser = targetUser ?? user;
+    let saltToUse = vault.salt;
+    let checkCipherToUse = vault.checkCipher;
+    let checkIvToUse = vault.checkIv;
+    let vaultInitialized = vault.initialized;
+
+    if (activeUser && (!vaultInitialized || !saltToUse || !checkCipherToUse || !checkIvToUse)) {
+      try {
+        const remoteMeta = await fetchUserVaultMeta(activeUser.uid);
+        if (remoteMeta) {
+          vaultInitialized = true;
+          saltToUse = remoteMeta.vaultSalt;
+          checkCipherToUse = remoteMeta.vaultCheckCipher;
+          checkIvToUse = remoteMeta.vaultCheckIv;
+          setVault((prev) => ({
+            ...prev,
+            initialized: true,
+            salt: remoteMeta.vaultSalt,
+            checkCipher: remoteMeta.vaultCheckCipher,
+            checkIv: remoteMeta.vaultCheckIv,
+          }));
+        }
+      } catch {
+        // Ignore offline lookup failure
+      }
+    }
+
+    if (vaultInitialized && saltToUse && checkCipherToUse && checkIvToUse) {
+      const key = await deriveAesKey(passphrase, saltToUse);
+      const valid = await verifyVaultCheck(key, checkCipherToUse, checkIvToUse);
       if (!valid) return false;
       setCryptoKey(key);
       setActivePassphrase(passphrase);
-      setVault((prev) => ({ ...prev, unlocked: true }));
+      setVault({
+        initialized: true,
+        unlocked: true,
+        salt: saltToUse,
+        checkCipher: checkCipherToUse,
+        checkIv: checkIvToUse,
+      });
+      if (activeUser) {
+        flushPendingItemsToCloud(activeUser, key).catch(() => {});
+      }
       return true;
     }
 
@@ -1151,24 +1030,99 @@ export default function App() {
       checkIv,
     });
 
-    if (user) {
+    if (activeUser) {
       try {
-        await upsertUserVaultMeta(user.uid, {
+        await upsertUserVaultMeta(activeUser.uid, {
           vaultSalt: salt,
           vaultCheckCipher: checkCipher,
           vaultCheckIv: checkIv,
           themeMode: theme.mode,
           themeAccent: theme.accent,
         });
-        for (const t of tasks) await pushEncryptedSyncItem(user.uid, key, 'task', t);
-        for (const m of memos) await pushEncryptedSyncItem(user.uid, key, 'memo', m);
-        for (const p of plugins) await pushEncryptedSyncItem(user.uid, key, 'plugin', p);
-        for (const c of businessCards) await pushEncryptedSyncItem(user.uid, key, 'card', c);
+        const current = latestCollectionsRef.current;
+        for (const t of current.tasks) await pushEncryptedSyncItem(activeUser.uid, key, 'task', t);
+        for (const m of current.memos) await pushEncryptedSyncItem(activeUser.uid, key, 'memo', m);
+        for (const p of current.plugins) await pushEncryptedSyncItem(activeUser.uid, key, 'plugin', p);
+        for (const c of current.businessCards) await pushEncryptedSyncItem(activeUser.uid, key, 'card', c);
+        setLastSyncedAt(Date.now());
       } catch {
         // Ignore offline errors
       }
     }
     return true;
+  };
+
+  const finalizeSyncAuth = async (
+    authedUser: User,
+    passphrase: string,
+    label: string
+  ): Promise<{ ok: boolean; message: string }> => {
+    setSyncIdentityHint(loadSyncIdentityHint());
+    const unlocked = await handleSetupOrUnlockVault(passphrase, authedUser);
+    if (unlocked) {
+      const msg = `已連線「${label}」，並自動解鎖 AES-256-GCM 跨平台同步！`;
+      showToast(msg);
+      return { ok: true, message: msg };
+    }
+    const msg = `已連線「${label}」，請於左上方金鑰庫輸入您原先設定的加密密碼以解鎖資料同步。`;
+    showToast(msg);
+    return { ok: true, message: msg };
+  };
+
+  const handleRegisterSyncAccount = async (
+    identifier: string,
+    password: string
+  ): Promise<{ ok: boolean; message: string }> => {
+    setAuthLoading(true);
+    try {
+      const { user: authedUser, displayLabel } = await registerSyncAccount(identifier, password);
+      return await finalizeSyncAuth(authedUser, password, displayLabel);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '註冊同步帳號失敗';
+      showToast(message);
+      return { ok: false, message };
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleSignInSyncAccount = async (
+    identifier: string,
+    password: string
+  ): Promise<{ ok: boolean; message: string }> => {
+    setAuthLoading(true);
+    try {
+      const { user: authedUser, displayLabel } = await signInSyncAccount(identifier, password);
+      return await finalizeSyncAuth(authedUser, password, displayLabel);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '登入同步帳號失敗';
+      showToast(message);
+      return { ok: false, message };
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleConnectSyncSerial = async (
+    serial: string,
+    syncPassword: string,
+    intent: 'auto' | 'create' | 'join' = 'auto'
+  ): Promise<{ ok: boolean; message: string }> => {
+    setAuthLoading(true);
+    try {
+      const { user: authedUser, formattedSerial } = await connectWithSyncSerial(
+        serial,
+        syncPassword,
+        intent
+      );
+      return await finalizeSyncAuth(authedUser, syncPassword, formattedSerial);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '序號配對連線失敗';
+      showToast(message);
+      return { ok: false, message };
+    } finally {
+      setAuthLoading(false);
+    }
   };
 
   const handleCreateCloudBackup = async (label: string) => {
@@ -1602,9 +1556,6 @@ export default function App() {
               govCache={govCache}
               govSyncing={govSyncing}
               isSpeaking={isSpeaking}
-              googleCalendarConnected={Boolean(googleCalendarToken)}
-              googleCalendarLoading={googleCalendarLoading}
-              googleCalendarEvents={googleCalendarEvents}
               onSelectDate={setSelectedDate}
               onEditTask={(task) => {
                 setEditingTask(task);
@@ -1626,16 +1577,6 @@ export default function App() {
                 showToast('已停止語音播報');
               }}
               onTestFloatingNotification={() => triggerTodayPendingReminder(true)}
-              onConnectGoogleCalendar={handleConnectGoogleCalendar}
-              onDisconnectGoogleCalendar={() => {
-                disconnectGoogleCalendarToken();
-                setGoogleCalendarEvents([]);
-                showToast('已中斷 Google 行事曆連線');
-              }}
-              onLoadGoogleCalendarEvents={handleLoadGoogleCalendarEvents}
-              onImportGoogleEventsToTasks={handleImportGoogleEventsToTasks}
-              onPushTasksToGoogleCalendar={handlePushTasksToGoogleCalendar}
-              onDeleteGoogleCalendarEvent={handleDeleteGoogleCalendarEvent}
             />
           )}
 
@@ -1685,13 +1626,12 @@ export default function App() {
               focusedTaskId={focusedTaskId}
               onSelectFocusTask={setFocusedTaskId}
               onTogglePlugin={(id) => {
-                let updated: WorkflowPlugin | null = null;
+                const existing = latestCollectionsRef.current.plugins.find((p) => p.id === id);
+                const updated: WorkflowPlugin | null = existing
+                  ? { ...existing, enabled: !existing.enabled, updatedAt: Date.now() }
+                  : null;
                 setPlugins((prev) =>
-                  prev.map((p) => {
-                    if (p.id !== id) return p;
-                    updated = { ...p, enabled: !p.enabled, updatedAt: Date.now() };
-                    return updated;
-                  })
+                  prev.map((p) => (p.id === id && updated ? updated : p))
                 );
                 if (updated) syncSingleItemToCloud('plugin', updated);
               }}
@@ -1746,6 +1686,7 @@ export default function App() {
             <SettingsBackupView
               user={user}
               authLoading={authLoading}
+              syncIdentityLabel={resolveSyncIdentityLabel(user?.email, syncIdentityHint)}
               vault={vault}
               theme={theme}
               voice={voice}
@@ -1763,9 +1704,9 @@ export default function App() {
               syncStatusText={
                 user
                   ? vault.unlocked
-                    ? `已連接帳號 ${user.email} · 端對端加密即時同步啟用中${lastSyncedAt ? ` (上次同步 ${new Date(lastSyncedAt).toLocaleTimeString('zh-TW')})` : ''}`
-                    : `已登入 ${user.email}，請輸入上方金鑰密碼以解鎖雲端同步`
-                  : '目前為純離線本機儲存模式，登入 Google 帳號即可啟用跨平台加密同步。'
+                    ? `已連接同步空間「${resolveSyncIdentityLabel(user.email, syncIdentityHint)}」· 端對端加密即時同步啟用中${lastSyncedAt ? ` (上次同步 ${new Date(lastSyncedAt).toLocaleTimeString('zh-TW')})` : ''}`
+                    : `已連線「${resolveSyncIdentityLabel(user.email, syncIdentityHint)}」，請輸入上方金鑰密碼以解鎖雲端同步`
+                  : '目前為純離線本機儲存模式，輸入「帳號密碼」或「同步序號」即可啟用跨平台加密同步。'
               }
               pendingSyncCount={
                 tasks.filter((t) => t.syncStatus === 'pending').length +
@@ -1780,24 +1721,16 @@ export default function App() {
                 const count = await flushPendingItemsToCloud(user, cryptoKey);
                 showToast(count > 0 ? `已完成 ${count} 筆資料跨平台同步` : '所有裝置資料皆已是最新同步狀態');
               }}
-              onGoogleSignIn={async () => {
-                setAuthLoading(true);
-                try {
-                  await signInWithGoogle();
-                  showToast('已登入 Google 帳號');
-                } catch {
-                  showToast('Google 登入已取消或受阻');
-                } finally {
-                  setAuthLoading(false);
-                }
-              }}
-              onGoogleSignOut={async () => {
-                await signOutGoogle();
+              onRegisterSyncAccount={handleRegisterSyncAccount}
+              onSignInSyncAccount={handleSignInSyncAccount}
+              onConnectSyncSerial={handleConnectSyncSerial}
+              onSignOutSync={async () => {
+                await signOutSyncSession();
+                setSyncIdentityHint(null);
                 setCryptoKey(null);
                 setActivePassphrase(null);
-                setGoogleCalendarEvents([]);
                 setVault((prev) => ({ ...prev, unlocked: false }));
-                showToast('已登出雲端帳號，本機離線資料仍完整保留');
+                showToast('已登出同步空間，本機離線資料仍完整保留');
               }}
               onSetupOrUnlockVault={handleSetupOrUnlockVault}
               onLockVault={() => {

@@ -1,9 +1,9 @@
 import { initializeApp } from 'firebase/app';
 import {
+  createUserWithEmailAndPassword,
   getAuth,
-  GoogleAuthProvider,
   onAuthStateChanged,
-  signInWithPopup,
+  signInWithEmailAndPassword,
   signOut,
   type User,
 } from 'firebase/auth';
@@ -35,40 +35,18 @@ import type {
   WorkflowPlugin,
 } from '../types/assistant';
 import { decryptText, encryptText } from '../utils/cryptoVault';
+import {
+  deriveSerialAuthCredentials,
+  formatAuthErrorMessage,
+  maskSyncSerial,
+  normalizeAccountIdentifier,
+  saveSyncIdentityHint,
+} from '../utils/syncAuth';
 
 const app = initializeApp(firebaseConfig);
 const databaseId = (firebaseConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId;
 export const db = databaseId ? getFirestore(app, databaseId) : getFirestore(app);
 export const auth = getAuth(app);
-
-export const GOOGLE_CALENDAR_SCOPES = [
-  'https://www.googleapis.com/auth/calendar.events',
-] as const;
-
-const googleProvider = new GoogleAuthProvider();
-const calendarGoogleProvider = new GoogleAuthProvider();
-GOOGLE_CALENDAR_SCOPES.forEach((scope) => calendarGoogleProvider.addScope(scope));
-
-// Strictly in-memory OAuth access token cache (never persisted to localStorage/sessionStorage)
-let cachedCalendarAccessToken: string | null = null;
-const tokenListeners = new Set<(token: string | null) => void>();
-
-function setCalendarAccessToken(token: string | null) {
-  cachedCalendarAccessToken = token;
-  tokenListeners.forEach((cb) => cb(token));
-}
-
-export function getGoogleCalendarAccessToken(): string | null {
-  return cachedCalendarAccessToken;
-}
-
-export function subscribeCalendarToken(cb: (token: string | null) => void): () => void {
-  tokenListeners.add(cb);
-  cb(cachedCalendarAccessToken);
-  return () => {
-    tokenListeners.delete(cb);
-  };
-}
 
 export enum OperationType {
   CREATE = 'create',
@@ -136,41 +114,106 @@ export async function testFirestoreConnection(): Promise<boolean> {
 
 export function subscribeAuth(cb: (user: User | null) => void): Unsubscribe {
   return onAuthStateChanged(auth, (user) => {
-    if (!user) {
-      setCalendarAccessToken(null);
-    }
     cb(user);
   });
 }
 
-export async function signInWithGoogle(): Promise<User> {
-  const result = await signInWithPopup(auth, googleProvider);
-  const credential = GoogleAuthProvider.credentialFromResult(result);
-  if (credential?.accessToken && cachedCalendarAccessToken === null) {
-    // Keep standard login separate unless calendar scope was granted
+export async function registerSyncAccount(
+  identifier: string,
+  password: string
+): Promise<{ user: User; displayLabel: string }> {
+  const normalized = normalizeAccountIdentifier(identifier);
+  const pwd = password.trim();
+  if (pwd.length < 6) {
+    throw new Error('同步密碼至少需 6 個字元');
   }
-  return result.user;
-}
-
-export async function connectGoogleCalendarPopup(): Promise<{
-  user: User;
-  accessToken: string;
-}> {
-  const result = await signInWithPopup(auth, calendarGoogleProvider);
-  const credential = GoogleAuthProvider.credentialFromResult(result);
-  if (!credential?.accessToken) {
-    throw new Error('未能取得 Google Calendar 授權存取權杖，請重試。');
+  try {
+    const result = await createUserWithEmailAndPassword(auth, normalized.authEmail, pwd);
+    saveSyncIdentityHint({ mode: 'account', label: normalized.displayLabel });
+    return { user: result.user, displayLabel: normalized.displayLabel };
+  } catch (err) {
+    throw new Error(formatAuthErrorMessage(err));
   }
-  setCalendarAccessToken(credential.accessToken);
-  return { user: result.user, accessToken: credential.accessToken };
 }
 
-export function disconnectGoogleCalendarToken(): void {
-  setCalendarAccessToken(null);
+export async function signInSyncAccount(
+  identifier: string,
+  password: string
+): Promise<{ user: User; displayLabel: string }> {
+  const normalized = normalizeAccountIdentifier(identifier);
+  const pwd = password.trim();
+  if (pwd.length < 6) {
+    throw new Error('同步密碼至少需 6 個字元');
+  }
+  try {
+    const result = await signInWithEmailAndPassword(auth, normalized.authEmail, pwd);
+    saveSyncIdentityHint({ mode: 'account', label: normalized.displayLabel });
+    return { user: result.user, displayLabel: normalized.displayLabel };
+  } catch (err) {
+    throw new Error(formatAuthErrorMessage(err));
+  }
 }
 
-export async function signOutGoogle(): Promise<void> {
-  setCalendarAccessToken(null);
+export async function connectWithSyncSerial(
+  serial: string,
+  syncPassword: string,
+  intent: 'auto' | 'create' | 'join' = 'auto'
+): Promise<{ user: User; formattedSerial: string; isNewSpace: boolean }> {
+  const creds = await deriveSerialAuthCredentials(serial, syncPassword);
+  const label = maskSyncSerial(creds.formattedSerial);
+
+  if (intent === 'create') {
+    try {
+      const created = await createUserWithEmailAndPassword(
+        auth,
+        creds.authEmail,
+        creds.authPassword
+      );
+      saveSyncIdentityHint({ mode: 'serial', label });
+      return { user: created.user, formattedSerial: creds.formattedSerial, isNewSpace: true };
+    } catch (err) {
+      throw new Error(formatAuthErrorMessage(err));
+    }
+  }
+
+  try {
+    const signed = await signInWithEmailAndPassword(auth, creds.authEmail, creds.authPassword);
+    saveSyncIdentityHint({ mode: 'serial', label });
+    return { user: signed.user, formattedSerial: creds.formattedSerial, isNewSpace: false };
+  } catch (err) {
+    const code =
+      typeof err === 'object' && err !== null && 'code' in err
+        ? String((err as { code: unknown }).code)
+        : '';
+    if (
+      intent === 'auto' &&
+      (code === 'auth/user-not-found' || code === 'auth/invalid-credential')
+    ) {
+      try {
+        const created = await createUserWithEmailAndPassword(
+          auth,
+          creds.authEmail,
+          creds.authPassword
+        );
+        saveSyncIdentityHint({ mode: 'serial', label });
+        return { user: created.user, formattedSerial: creds.formattedSerial, isNewSpace: true };
+      } catch (createErr) {
+        const createCode =
+          typeof createErr === 'object' && createErr !== null && 'code' in createErr
+            ? String((createErr as { code: unknown }).code)
+            : '';
+        if (createCode === 'auth/email-already-in-use') {
+          throw new Error('此同步序號的配對密碼不正確，請重新確認。');
+        }
+        throw new Error(formatAuthErrorMessage(createErr));
+      }
+    }
+    throw new Error(formatAuthErrorMessage(err));
+  }
+}
+
+export async function signOutSyncSession(): Promise<void> {
+  saveSyncIdentityHint(null);
   await signOut(auth);
 }
 

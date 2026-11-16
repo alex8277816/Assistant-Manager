@@ -10,12 +10,10 @@ import {
   Plus,
   RefreshCw,
   Square,
-  Trash2,
   Upload,
   Volume2,
 } from 'lucide-react';
 import type {
-  GoogleCalendarEventItem,
   GovHolidayItem,
   GovSettings,
   GovSyncCache,
@@ -28,7 +26,6 @@ import {
   GOV_OPENDATA_CALENDAR_URL,
   TAIWAN_CITIES,
 } from '../utils/govCalendar';
-import { GoogleSignInButton } from './GoogleSignInButton';
 import { PWAInstallButton } from './PWAInstallButton';
 
 interface CalendarSyncViewProps {
@@ -38,9 +35,6 @@ interface CalendarSyncViewProps {
   govCache: GovSyncCache;
   govSyncing: boolean;
   isSpeaking: boolean;
-  googleCalendarConnected: boolean;
-  googleCalendarLoading: boolean;
-  googleCalendarEvents: GoogleCalendarEventItem[];
   onSelectDate: (dateStr: string) => void;
   onEditTask: (task: TaskItem) => void;
   onRescheduleTask: (taskId: string, newDate: string, newTime?: string) => void;
@@ -52,12 +46,6 @@ interface CalendarSyncViewProps {
   onSpeakGovStatus: () => void;
   onStopSpeaking: () => void;
   onTestFloatingNotification: () => void;
-  onConnectGoogleCalendar: () => Promise<void>;
-  onDisconnectGoogleCalendar: () => void;
-  onLoadGoogleCalendarEvents: () => Promise<void>;
-  onImportGoogleEventsToTasks: (events: GoogleCalendarEventItem[]) => number;
-  onPushTasksToGoogleCalendar: (tasksToPush: TaskItem[]) => Promise<number>;
-  onDeleteGoogleCalendarEvent: (eventId: string) => Promise<void>;
 }
 
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
@@ -69,9 +57,6 @@ export const CalendarSyncView: React.FC<CalendarSyncViewProps> = ({
   govCache,
   govSyncing,
   isSpeaking,
-  googleCalendarConnected,
-  googleCalendarLoading,
-  googleCalendarEvents,
   onSelectDate,
   onEditTask,
   onRescheduleTask,
@@ -83,12 +68,6 @@ export const CalendarSyncView: React.FC<CalendarSyncViewProps> = ({
   onSpeakGovStatus,
   onStopSpeaking,
   onTestFloatingNotification,
-  onConnectGoogleCalendar,
-  onDisconnectGoogleCalendar,
-  onLoadGoogleCalendarEvents,
-  onImportGoogleEventsToTasks,
-  onPushTasksToGoogleCalendar,
-  onDeleteGoogleCalendarEvent,
 }) => {
   const initialYear = Number(selectedDate.slice(0, 4));
   const initialMonth = Number(selectedDate.slice(5, 7)) - 1;
@@ -98,11 +77,6 @@ export const CalendarSyncView: React.FC<CalendarSyncViewProps> = ({
   const [rescheduleId, setRescheduleId] = useState<string | null>(null);
   const [rescheduleDate, setRescheduleDate] = useState('');
   const [rescheduleTime, setRescheduleTime] = useState('');
-  const [pendingGoogleConfirm, setPendingGoogleConfirm] = useState<
-    | { type: 'push'; tasksToPush: TaskItem[] }
-    | { type: 'delete'; event: GoogleCalendarEventItem }
-    | null
-  >(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const activeTasks = useMemo(() => tasks.filter((t) => !t.deleted), [tasks]);
@@ -271,132 +245,6 @@ export const CalendarSyncView: React.FC<CalendarSyncViewProps> = ({
 
         {syncMessage && (
           <p className="mt-3 text-xs font-medium accent-text">{syncMessage}</p>
-        )}
-      </section>
-
-      {/* Google Calendar Integration Section */}
-      <section
-        aria-label="Google 行事曆連線與同步"
-        className="rounded-2xl border border-stone-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5 space-y-4"
-      >
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-          <div>
-            <h2 className="text-base font-semibold text-stone-900 dark:text-zinc-100 flex items-center gap-2">
-              <CalendarIcon className="w-4 h-4 accent-text" />
-              <span>Google 行事曆雲端雙向連線</span>
-            </h2>
-            <p className="text-xs text-stone-600 dark:text-zinc-400 mt-1">
-              {googleCalendarConnected
-                ? '已取得 Google Calendar 授權（存取權杖僅存於記憶體），可讀取行程或將本機待辦同步至 Google 行事曆。'
-                : '連結您的 Google 帳號，即可直接瀏覽 Google 行事曆行程並將排程寫入您的日曆。'}
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
-            {!googleCalendarConnected ? (
-              <GoogleSignInButton
-                onClick={async () => {
-                  await onConnectGoogleCalendar();
-                  setSyncMessage('已連結 Google 行事曆！');
-                }}
-                disabled={googleCalendarLoading}
-              />
-            ) : (
-              <>
-                <button
-                  type="button"
-                  disabled={googleCalendarLoading}
-                  onClick={async () => {
-                    await onLoadGoogleCalendarEvents();
-                    setSyncMessage('已從 Google 行事曆載入最新行程。');
-                  }}
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 dark:border-zinc-700 px-3.5 py-2 text-xs font-medium hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[40px] disabled:opacity-60"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${googleCalendarLoading ? 'animate-spin' : ''}`} />
-                  <span>載入 Google 行程</span>
-                </button>
-                <button
-                  type="button"
-                  disabled={googleCalendarLoading || activeTasks.filter((t) => !t.completed).length === 0}
-                  onClick={() => {
-                    const targets = activeTasks.filter((t) => !t.completed).slice(0, 15);
-                    setPendingGoogleConfirm({ type: 'push', tasksToPush: targets });
-                  }}
-                  className="inline-flex items-center gap-1.5 rounded-xl accent-bg px-3.5 py-2 text-xs font-medium min-h-[40px] disabled:opacity-50"
-                >
-                  <Upload className="w-3.5 h-3.5" />
-                  <span>同步排程至 Google 行事曆</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={onDisconnectGoogleCalendar}
-                  className="rounded-xl border border-stone-200 dark:border-zinc-700 px-3 py-2 text-xs text-stone-600 dark:text-zinc-300 hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[40px]"
-                >
-                  中斷連線
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-
-        {googleCalendarConnected && googleCalendarEvents.length > 0 && (
-          <div className="rounded-xl border border-stone-200 dark:border-zinc-800 bg-stone-50 dark:bg-zinc-950 p-4 space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-xs font-semibold text-stone-800 dark:text-zinc-200 tabular-nums">
-                近期 Google 行事曆事件 ({googleCalendarEvents.length} 筆)
-              </p>
-              <button
-                type="button"
-                onClick={() => {
-                  const imported = onImportGoogleEventsToTasks(googleCalendarEvents);
-                  setSyncMessage(
-                    imported > 0
-                      ? `已從 Google 行事曆匯入 ${imported} 項新行程至 Kairo 排程。`
-                      : '顯示的 Google 行事曆事件皆已存在於排程中。'
-                  );
-                }}
-                className="inline-flex items-center gap-1 rounded-lg border border-stone-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-1.5 text-xs font-medium hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[34px]"
-              >
-                <Plus className="w-3.5 h-3.5 accent-text" />
-                <span>匯入至 Kairo 待辦</span>
-              </button>
-            </div>
-            <ul className="divide-y divide-stone-200/70 dark:divide-zinc-800 max-h-56 overflow-y-auto">
-              {googleCalendarEvents.map((ev) => (
-                <li key={ev.id} className="py-2 flex items-center justify-between gap-3 text-xs">
-                  <div className="min-w-0">
-                    <p className="font-medium text-stone-900 dark:text-zinc-100 truncate">
-                      {ev.summary}
-                    </p>
-                    <p className="font-mono text-stone-500 dark:text-zinc-400 tabular-nums">
-                      {ev.startDate} {ev.startTime ? `${ev.startTime}${ev.endTime ? `–${ev.endTime}` : ''}` : '全天'}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    {ev.htmlLink && (
-                      <a
-                        href={ev.htmlLink}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        aria-label={`在 Google 行事曆開啟 ${ev.summary}`}
-                        className="p-1.5 rounded-lg text-stone-500 hover:bg-stone-200/60 dark:hover:bg-zinc-800"
-                      >
-                        <ExternalLink className="w-3.5 h-3.5" />
-                      </a>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => setPendingGoogleConfirm({ type: 'delete', event: ev })}
-                      aria-label={`從 Google 行事曆刪除 ${ev.summary}`}
-                      className="p-1.5 rounded-lg text-stone-400 hover:text-rose-600 hover:bg-stone-200/60 dark:hover:bg-zinc-800"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </div>
         )}
       </section>
 
@@ -752,73 +600,6 @@ export const CalendarSyncView: React.FC<CalendarSyncViewProps> = ({
           )}
         </section>
       </div>
-
-      {/* Mandatory User Confirmation Dialog for Google Calendar Mutations */}
-      {pendingGoogleConfirm && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="確認變更 Google 行事曆"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
-        >
-          <div className="w-full max-w-md rounded-2xl border border-stone-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-6 shadow-xl space-y-4">
-            <h3 className="text-base font-semibold text-stone-900 dark:text-zinc-100">
-              {pendingGoogleConfirm.type === 'push'
-                ? `確認同步 ${pendingGoogleConfirm.tasksToPush.length} 項排程至 Google 行事曆？`
-                : `確認從 Google 行事曆刪除「${pendingGoogleConfirm.event.summary}」？`}
-            </h3>
-            {pendingGoogleConfirm.type === 'push' ? (
-              <div className="space-y-2 text-xs text-stone-600 dark:text-zinc-300">
-                <p>系統將在您的 Google 主要行事曆新增或更新以下項目：</p>
-                <ul className="max-h-40 overflow-y-auto rounded-xl border border-stone-200 dark:border-zinc-800 bg-stone-50 dark:bg-zinc-950 p-3 space-y-1 font-mono">
-                  {pendingGoogleConfirm.tasksToPush.map((t) => (
-                    <li key={t.id} className="truncate">
-                      • {t.dueDate} {t.startTime || '全天'} {t.title}
-                      {t.googleEventId ? ' (更新)' : ' (新增)'}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : (
-              <p className="text-xs text-stone-600 dark:text-zinc-300">
-                此操作將永久移除 Google 行事曆中 {pendingGoogleConfirm.event.startDate} 的「
-                {pendingGoogleConfirm.event.summary}」事件且無法復原。
-              </p>
-            )}
-            <div className="flex items-center justify-end gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setPendingGoogleConfirm(null)}
-                className="rounded-xl border border-stone-200 dark:border-zinc-700 px-4 py-2 text-xs font-medium min-h-[40px]"
-              >
-                取消
-              </button>
-              <button
-                type="button"
-                disabled={googleCalendarLoading}
-                onClick={async () => {
-                  const action = pendingGoogleConfirm;
-                  setPendingGoogleConfirm(null);
-                  if (action.type === 'push') {
-                    const count = await onPushTasksToGoogleCalendar(action.tasksToPush);
-                    setSyncMessage(`已確認並成功同步 ${count} 項排程至 Google 行事曆。`);
-                  } else {
-                    await onDeleteGoogleCalendarEvent(action.event.id);
-                    setSyncMessage(`已從 Google 行事曆刪除「${action.event.summary}」。`);
-                  }
-                }}
-                className={`rounded-xl px-4 py-2 text-xs font-medium text-white min-h-[40px] ${
-                  pendingGoogleConfirm.type === 'delete'
-                    ? 'bg-rose-600 hover:bg-rose-700'
-                    : 'accent-bg'
-                }`}
-              >
-                {pendingGoogleConfirm.type === 'delete' ? '確認刪除' : '確認同步至 Google'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

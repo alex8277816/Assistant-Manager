@@ -57,7 +57,11 @@ import {
   validateAndNormalizeCardDraft,
 } from './cardHelpers';
 import { buildSerialPairingUrl, parseSerialPairingHash } from './pairingLink';
-import { buildQuickLinkItem, validateAndNormalizeQuickLink } from './quickLinks';
+import {
+  buildQuickLinkItem,
+  formatQuickLinkHost,
+  validateAndNormalizeQuickLink,
+} from './quickLinks';
 import type { BusinessCardItem, MemoItem, TaskItem, WorkflowPlugin } from '../types/assistant';
 
 const BASE_DATE = '2026-11-12';
@@ -655,6 +659,9 @@ test('quickLinks validates, normalizes URLs safely, and builds quick link items'
   assert.equal(built.syncStatus, 'pending');
   assert.equal(built.createdAt, 9999);
   assert.equal(built.updatedAt, 9999);
+
+  assert.equal(formatQuickLinkHost('https://www.eip.company.com/portal'), 'eip.company.com');
+  assert.equal(formatQuickLinkHost('http://contract-sys:8080/login'), 'contract-sys:8080');
 });
 
 test('mergeSyncedCollection resolves minor clock skew via numeric version when local is not pending', () => {

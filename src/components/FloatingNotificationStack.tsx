@@ -31,7 +31,7 @@ export const FloatingNotificationStack: React.FC<FloatingNotificationStackProps>
     <aside
       aria-label="即時提醒通知"
       data-testid="floating-notification-stack"
-      className="fixed z-50 top-2 left-3 right-3 md:top-auto md:left-auto md:bottom-5 md:right-5 md:w-96 space-y-2.5 pointer-events-none"
+      className="fixed z-50 bottom-20 left-3 right-3 md:left-auto md:bottom-5 md:right-5 md:w-96 space-y-2.5 pointer-events-none"
     >
       {notifications.slice(0, 3).map((item) => {
         const isDanger = item.kind === 'typhoon';

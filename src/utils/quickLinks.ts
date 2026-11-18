@@ -64,3 +64,14 @@ export function buildQuickLinkItem(
     updatedAt: nowMs,
   };
 }
+
+export function formatQuickLinkHost(rawUrl: string): string {
+  try {
+    const parsed = new URL(rawUrl);
+    const host = parsed.hostname.replace(/^www\./i, '');
+    return parsed.port ? `${host}:${parsed.port}` : host;
+  } catch {
+    return rawUrl;
+  }
+}
+

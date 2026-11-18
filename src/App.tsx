@@ -2008,7 +2008,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-stone-50 dark:bg-zinc-950 text-stone-900 dark:text-zinc-100 flex flex-col lg:flex-row">
       {/* Desktop Left Sidebar */}
-      <aside className="hidden lg:flex lg:flex-col lg:w-60 lg:shrink-0 border-r border-stone-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
+      <aside className="hidden lg:flex lg:flex-col lg:w-[272px] lg:shrink-0 border-r border-stone-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
         <div className="h-16 px-6 flex items-center border-b border-stone-200 dark:border-zinc-800 shrink-0">
           <span className="font-display text-lg font-bold tracking-tight text-stone-900 dark:text-zinc-100 whitespace-nowrap">
             Kairo 隨行助理
@@ -2211,6 +2211,7 @@ export default function App() {
               selectedDate={selectedDate}
               govSettings={govSettings}
               govCache={govCache}
+              quickLinks={quickLinks}
               isSpeaking={isSpeaking}
               onSelectDate={setSelectedDate}
               onQuickAddTask={handleQuickAddTask}
@@ -2248,6 +2249,9 @@ export default function App() {
                 showToast('正在更新行政院人事行政總處假日與停班停課狀態');
               }}
               onSpeakGovStatus={handleSpeakGovStatus}
+              onAddQuickLink={handleAddQuickLink}
+              onUpdateQuickLink={handleUpdateQuickLink}
+              onDeleteQuickLink={handleDeleteQuickLink}
             />
           )}
 
@@ -2604,6 +2608,7 @@ export default function App() {
             </div>
             <SidebarQuickLinks
               links={quickLinks}
+              variant="dialog"
               onAddLink={handleAddQuickLink}
               onUpdateLink={handleUpdateQuickLink}
               onDeleteLink={handleDeleteQuickLink}

@@ -15,6 +15,7 @@ import {
 import type {
   GovSettings,
   GovSyncCache,
+  QuickLinkItem,
   SortMode,
   TaskItem,
 } from '../types/assistant';
@@ -28,12 +29,14 @@ import { getUpcomingHolidays } from '../utils/govCalendar';
 import { formatTaskReminderSummary } from '../utils/reminderEngine';
 import { isSpeechRecognitionSupported, startVoiceDictation } from '../services/voiceService';
 import { TodayAnalyticsCard } from './TodayAnalyticsCard';
+import { SidebarQuickLinks } from './SidebarQuickLinks';
 
 interface TodayScheduleViewProps {
   tasks: TaskItem[];
   selectedDate: string;
   govSettings: GovSettings;
   govCache: GovSyncCache;
+  quickLinks: QuickLinkItem[];
   isSpeaking: boolean;
   onSelectDate: (dateStr: string) => void;
   onQuickAddTask: (raw: string, baseDate: string) => void;
@@ -47,6 +50,9 @@ interface TodayScheduleViewProps {
   onJumpToPomodoro: (taskId: string) => void;
   onSyncGovNow: () => void;
   onSpeakGovStatus: () => void;
+  onAddQuickLink: (name: string, url: string) => void;
+  onUpdateQuickLink: (id: string, name: string, url: string) => void;
+  onDeleteQuickLink: (id: string) => void;
 }
 
 const PRIORITY_LABEL: Record<TaskItem['priority'], string> = {
@@ -70,6 +76,7 @@ export const TodayScheduleView: React.FC<TodayScheduleViewProps> = ({
   selectedDate,
   govSettings,
   govCache,
+  quickLinks,
   isSpeaking,
   onSelectDate,
   onQuickAddTask,
@@ -83,6 +90,9 @@ export const TodayScheduleView: React.FC<TodayScheduleViewProps> = ({
   onJumpToPomodoro,
   onSyncGovNow,
   onSpeakGovStatus,
+  onAddQuickLink,
+  onUpdateQuickLink,
+  onDeleteQuickLink,
 }) => {
   const [quickInput, setQuickInput] = useState('');
   const [quickError, setQuickError] = useState('');
@@ -356,6 +366,20 @@ export const TodayScheduleView: React.FC<TodayScheduleViewProps> = ({
               {PRIORITY_LABEL[quickPreview.priority]} · 標籤 {quickPreview.tags.join(' / ')}
             </p>
           )}
+        </section>
+
+        {/* Mobile Quick Links Section (visible directly on phone/tablet where left sidebar is hidden) */}
+        <section
+          aria-label="行動端常用連結"
+          className="lg:hidden rounded-2xl border border-stone-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4"
+        >
+          <SidebarQuickLinks
+            links={quickLinks}
+            variant="dialog"
+            onAddLink={onAddQuickLink}
+            onUpdateLink={onUpdateQuickLink}
+            onDeleteLink={onDeleteQuickLink}
+          />
         </section>
 
         {/* Mini Analytics Dashboard (Completion Rate & Task Type Distribution) */}

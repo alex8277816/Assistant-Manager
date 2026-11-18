@@ -224,6 +224,8 @@ export interface QuickLinkItem {
   id: string;
   name: string;
   url: string;
+  pinned?: boolean;
+  category?: string;
   version: number;
   deleted?: boolean;
   syncStatus: SyncStatus;

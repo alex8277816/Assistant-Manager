@@ -48,21 +48,64 @@ export function validateAndNormalizeQuickLink(
   }
 }
 
+export const QUICK_LINK_CATEGORIES = [
+  '公司系統',
+  '行政簽核',
+  '專案開發',
+  '其他',
+] as const;
+
+export function normalizeQuickLinkCategory(raw?: string): string {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return '公司系統';
+  return trimmed.slice(0, 16);
+}
+
 export function buildQuickLinkItem(
   name: string,
   url: string,
   nowMs: number,
-  syncStatus: SyncStatus = 'local'
+  syncStatus: SyncStatus = 'local',
+  options?: { pinned?: boolean; category?: string }
 ): QuickLinkItem {
   return {
     id: `link-${nowMs}-${Math.random().toString(36).slice(2, 6)}`,
     name,
     url,
+    pinned: Boolean(options?.pinned),
+    category: normalizeQuickLinkCategory(options?.category),
     version: 1,
     syncStatus,
     createdAt: nowMs,
     updatedAt: nowMs,
   };
+}
+
+export function sortAndFilterQuickLinks(
+  links: QuickLinkItem[],
+  query = '',
+  categoryFilter = 'all'
+): QuickLinkItem[] {
+  const q = query.trim().toLowerCase();
+  return links
+    .filter((l) => !l.deleted)
+    .filter((l) => {
+      if (categoryFilter === 'pinned') return Boolean(l.pinned);
+      if (categoryFilter !== 'all') {
+        return normalizeQuickLinkCategory(l.category) === categoryFilter;
+      }
+      return true;
+    })
+    .filter((l) => {
+      if (!q) return true;
+      const hay = `${l.name} ${l.url} ${l.category || ''}`.toLowerCase();
+      return hay.includes(q);
+    })
+    .sort((a, b) => {
+      const pinDiff = Number(Boolean(b.pinned)) - Number(Boolean(a.pinned));
+      if (pinDiff !== 0) return pinDiff;
+      return a.createdAt - b.createdAt;
+    });
 }
 
 export function formatQuickLinkHost(rawUrl: string): string {

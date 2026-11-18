@@ -2,9 +2,11 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Calendar,
   CheckSquare,
+  ExternalLink,
   FileText,
   Link2,
   Moon,
+  Pin,
   Plus,
   Puzzle,
   RefreshCw,
@@ -87,7 +89,7 @@ import {
 import { parseQuickTaskInput } from './utils/smartEngine';
 import { findItemsNeedingPush, mergeSyncedCollection } from './utils/syncMerge';
 import { buildNewBusinessCard, type BusinessCardDraft } from './utils/cardHelpers';
-import { buildQuickLinkItem } from './utils/quickLinks';
+import { buildQuickLinkItem, sortAndFilterQuickLinks } from './utils/quickLinks';
 import {
   formatFirestoreSyncError,
   isOfflineSyncError,
@@ -1408,14 +1410,29 @@ export default function App() {
   };
 
   // Quick Links CRUD
-  const handleAddQuickLink = (name: string, url: string) => {
-    const created = buildQuickLinkItem(name, url, Date.now(), user ? 'pending' : 'local');
+  const handleAddQuickLink = (
+    name: string,
+    url: string,
+    options?: { category?: string; pinned?: boolean }
+  ) => {
+    const created = buildQuickLinkItem(
+      name,
+      url,
+      Date.now(),
+      user ? 'pending' : 'local',
+      options
+    );
     setQuickLinks((prev) => [...prev, created]);
     syncSingleItemToCloud('link', created);
     showToast(`已新增常用連結「${created.name}」`);
   };
 
-  const handleUpdateQuickLink = (id: string, name: string, url: string) => {
+  const handleUpdateQuickLink = (
+    id: string,
+    name: string,
+    url: string,
+    options?: { category?: string; pinned?: boolean }
+  ) => {
     const now = Date.now();
     const existing = latestCollectionsRef.current.quickLinks.find((l) => l.id === id);
     const updated: QuickLinkItem | null = existing
@@ -1423,6 +1440,8 @@ export default function App() {
           ...existing,
           name,
           url,
+          category: options?.category ?? existing.category,
+          pinned: options?.pinned ?? existing.pinned,
           version: nextItemVersion(existing.version),
           syncStatus: user ? 'pending' : 'local',
           updatedAt: now,
@@ -1431,6 +1450,23 @@ export default function App() {
     setQuickLinks((prev) => prev.map((l) => (l.id === id && updated ? updated : l)));
     if (updated) syncSingleItemToCloud('link', updated);
     showToast(`已更新連結「${name}」`);
+  };
+
+  const handleTogglePinQuickLink = (id: string) => {
+    const now = Date.now();
+    const existing = latestCollectionsRef.current.quickLinks.find((l) => l.id === id);
+    if (!existing) return;
+    const nextPinned = !existing.pinned;
+    const updated: QuickLinkItem = {
+      ...existing,
+      pinned: nextPinned,
+      version: nextItemVersion(existing.version),
+      syncStatus: user ? 'pending' : 'local',
+      updatedAt: now,
+    };
+    setQuickLinks((prev) => prev.map((l) => (l.id === id ? updated : l)));
+    syncSingleItemToCloud('link', updated);
+    showToast(nextPinned ? `已釘選「${existing.name}」至最上方` : `已取消釘選「${existing.name}」`);
   };
 
   const handleDeleteQuickLink = (id: string) => {
@@ -2005,7 +2041,11 @@ export default function App() {
   };
 
   const activeTabMeta = NAV_ITEMS.find((n) => n.id === activeTab)!;
-  const activeQuickLinksCount = quickLinks.filter((l) => !l.deleted).length;
+  const sortedActiveQuickLinks = useMemo(
+    () => sortAndFilterQuickLinks(quickLinks),
+    [quickLinks]
+  );
+  const activeQuickLinksCount = sortedActiveQuickLinks.length;
 
   return (
     <div className="min-h-screen bg-stone-50 dark:bg-zinc-950 text-stone-900 dark:text-zinc-100 flex flex-col lg:flex-row">
@@ -2044,6 +2084,7 @@ export default function App() {
             links={quickLinks}
             onAddLink={handleAddQuickLink}
             onUpdateLink={handleUpdateQuickLink}
+            onTogglePin={handleTogglePinQuickLink}
             onDeleteLink={handleDeleteQuickLink}
           />
         </div>
@@ -2153,6 +2194,34 @@ export default function App() {
             </button>
           </div>
         </header>
+
+        {/* Mobile Top Horizontal Quick-Launch Bar (1-tap launch when links exist) */}
+        {activeQuickLinksCount > 0 && (
+          <div
+            data-testid="mobile-quick-launch-bar"
+            aria-label="常用系統快捷列"
+            className="lg:hidden border-b border-stone-200/80 dark:border-zinc-800 bg-white/95 dark:bg-zinc-900/95 px-3 py-2 flex items-center gap-2 overflow-x-auto"
+          >
+            {sortedActiveQuickLinks.map((link) => (
+              <a
+                key={link.id}
+                href={link.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={`${link.name}\n${link.url}`}
+                className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium min-h-[34px] shrink-0 whitespace-nowrap transition-colors ${
+                  link.pinned
+                    ? 'accent-border accent-soft-bg text-stone-900 dark:text-zinc-100'
+                    : 'border-stone-200 dark:border-zinc-700 bg-stone-50 dark:bg-zinc-950 text-stone-800 dark:text-zinc-100 hover:bg-stone-100 dark:hover:bg-zinc-800'
+                }`}
+              >
+                {link.pinned && <Pin className="w-3 h-3 accent-text shrink-0" />}
+                <span className="max-w-[180px] truncate">{link.name}</span>
+                <ExternalLink className="w-3 h-3 text-stone-400 dark:text-zinc-500 shrink-0" />
+              </a>
+            ))}
+          </div>
+        )}
 
         {govSettings.enabled && (
           <GovAlertBanner
@@ -2664,6 +2733,7 @@ export default function App() {
               }
               onAddLink={handleAddQuickLink}
               onUpdateLink={handleUpdateQuickLink}
+              onTogglePin={handleTogglePinQuickLink}
               onDeleteLink={handleDeleteQuickLink}
             />
           </div>

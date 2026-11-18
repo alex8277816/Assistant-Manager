@@ -664,6 +664,36 @@ test('quickLinks validates, normalizes URLs safely, and builds quick link items'
   assert.equal(formatQuickLinkHost('http://contract-sys:8080/login'), 'contract-sys:8080');
 });
 
+test('sortAndFilterQuickLinks sorts pinned items first and filters by category and search query', async () => {
+  const { sortAndFilterQuickLinks } = await import('./quickLinks');
+  const l1 = buildQuickLinkItem('盛大台北系統', 'https://tpe-eip.shengda.com', 100, 'synced', {
+    pinned: false,
+    category: '公司系統',
+  });
+  const l2 = buildQuickLinkItem('合約簽核平台', 'https://sign.shengda.com', 200, 'synced', {
+    pinned: true,
+    category: '行政簽核',
+  });
+  const l3 = {
+    ...buildQuickLinkItem('已刪除系統', 'https://old.shengda.com', 300, 'synced'),
+    deleted: true,
+  };
+
+  const allSorted = sortAndFilterQuickLinks([l1, l2, l3]);
+  assert.equal(allSorted.length, 2);
+  assert.equal(allSorted[0].id, l2.id); // pinned first
+  assert.equal(allSorted[1].id, l1.id);
+
+  const pinnedOnly = sortAndFilterQuickLinks([l1, l2, l3], '', 'pinned');
+  assert.deepEqual(pinnedOnly.map((x) => x.id), [l2.id]);
+
+  const byCat = sortAndFilterQuickLinks([l1, l2, l3], '', '公司系統');
+  assert.deepEqual(byCat.map((x) => x.id), [l1.id]);
+
+  const bySearch = sortAndFilterQuickLinks([l1, l2, l3], 'sign.shengda', 'all');
+  assert.deepEqual(bySearch.map((x) => x.id), [l2.id]);
+});
+
 test('mergeSyncedCollection resolves minor clock skew via numeric version when local is not pending', () => {
   const localSynced = makeTask({
     id: 'skew-1',

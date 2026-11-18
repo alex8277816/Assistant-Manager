@@ -1,7 +1,11 @@
 import React, { useState } from 'react';
-import { Trash2, X } from 'lucide-react';
-import type { PriorityLevel, TaskItem } from '../types/assistant';
-import { inferSmartTags } from '../utils/smartEngine';
+import { BellPlus, Trash2, X } from 'lucide-react';
+import type { PriorityLevel, TaskItem, TaskReminderRule } from '../types/assistant';
+import { addDaysToDateStr, inferSmartTags } from '../utils/smartEngine';
+import {
+  EXTENDED_REMINDER_PRESETS,
+  formatReminderRuleLabel,
+} from '../utils/reminderEngine';
 
 interface TaskModalProps {
   initialTask?: TaskItem | null;
@@ -29,10 +33,77 @@ export const TaskModal: React.FC<TaskModalProps> = ({
   const [reminderMinutes, setReminderMinutes] = useState<number>(
     initialTask?.reminderMinutes ?? 15
   );
+  const [customReminders, setCustomReminders] = useState<TaskReminderRule[]>(
+    initialTask?.customReminders || []
+  );
+  const [exactDateInput, setExactDateInput] = useState(initialTask?.dueDate || defaultDate);
+  const [exactTimeInput, setExactTimeInput] = useState(initialTask?.startTime || '09:00');
+  const [relAmountInput, setRelAmountInput] = useState('1');
+  const [relUnitInput, setRelUnitInput] = useState<'minutes' | 'hours' | 'days'>('days');
+  const [reminderFeedback, setReminderFeedback] = useState('');
   const [voiceReminder, setVoiceReminder] = useState<boolean>(
     initialTask?.voiceReminder ?? true
   );
   const [error, setError] = useState('');
+
+  const addExactReminderRule = (targetDate: string, targetTime: string) => {
+    if (!targetDate || !targetTime) {
+      setReminderFeedback('請選擇要提醒的日期與時間');
+      return;
+    }
+    const duplicate = customReminders.some(
+      (r) => r.mode === 'exact' && r.date === targetDate && r.time === targetTime
+    );
+    if (duplicate) {
+      setReminderFeedback(`已存在 ${targetDate} ${targetTime} 的提醒`);
+      return;
+    }
+    setCustomReminders((prev) => [
+      ...prev,
+      {
+        id: `rem-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+        mode: 'exact',
+        date: targetDate,
+        time: targetTime,
+      },
+    ]);
+    setReminderFeedback('');
+  };
+
+  const addRelativeReminderRule = (minutesBefore: number) => {
+    if (!Number.isFinite(minutesBefore) || minutesBefore < 0) {
+      setReminderFeedback('請輸入有效的提前提醒時間');
+      return;
+    }
+    if (
+      minutesBefore === reminderMinutes ||
+      customReminders.some((r) => r.mode === 'relative' && r.minutesBefore === minutesBefore)
+    ) {
+      setReminderFeedback('此提前提醒時間已存在於排程中');
+      return;
+    }
+    setCustomReminders((prev) => [
+      ...prev,
+      {
+        id: `rem-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+        mode: 'relative',
+        minutesBefore,
+      },
+    ]);
+    setReminderFeedback('');
+  };
+
+  const handleAddCustomRelative = () => {
+    const amount = Number(relAmountInput);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setReminderFeedback('請輸入大於 0 的數字');
+      return;
+    }
+    const multiplier = relUnitInput === 'days' ? 1440 : relUnitInput === 'hours' ? 60 : 1;
+    addRelativeReminderRule(Math.round(amount * multiplier));
+  };
+
+  const prevDayStr = dueDate ? addDaysToDateStr(dueDate, -1) : '';
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -60,6 +131,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
         tags: mergedTags,
         completed: initialTask?.completed || false,
         reminderMinutes,
+        customReminders: customReminders.length > 0 ? customReminders : undefined,
         voiceReminder,
       },
       initialTask?.id
@@ -130,7 +202,13 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                 id="task-date-input"
                 type="date"
                 value={dueDate}
-                onChange={(e) => setDueDate(e.target.value)}
+                onChange={(e) => {
+                  const nextDate = e.target.value;
+                  if (exactDateInput === dueDate && nextDate) {
+                    setExactDateInput(nextDate);
+                  }
+                  setDueDate(nextDate);
+                }}
                 className="w-full rounded-xl border border-stone-200 dark:border-zinc-700 bg-stone-50 dark:bg-zinc-950 px-3 py-2 text-sm font-mono text-stone-900 dark:text-zinc-100"
               />
             </div>
@@ -180,7 +258,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
 
             <div>
               <label htmlFor="task-reminder-select" className="block text-xs font-medium text-stone-600 dark:text-zinc-400 mb-1.5">
-                自動提醒時間
+                主要提醒時間
               </label>
               <select
                 id="task-reminder-select"
@@ -188,15 +266,147 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                 onChange={(e) => setReminderMinutes(Number(e.target.value))}
                 className="w-full rounded-xl border border-stone-200 dark:border-zinc-700 bg-stone-50 dark:bg-zinc-950 px-3 py-2.5 text-sm text-stone-900 dark:text-zinc-100"
               >
-                <option value={-1}>關閉提醒</option>
-                <option value={0}>準時提醒</option>
-                <option value={5}>提前 5 分鐘</option>
-                <option value={10}>提前 10 分鐘</option>
-                <option value={15}>提前 15 分鐘</option>
-                <option value={30}>提前 30 分鐘</option>
-                <option value={60}>提前 1 小時</option>
+                {EXTENDED_REMINDER_PRESETS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
               </select>
             </div>
+          </div>
+
+          {/* Multi-Day / Custom Date-Time Reminder Builder */}
+          <div className="rounded-xl border border-stone-200 dark:border-zinc-800 bg-stone-50/80 dark:bg-zinc-950/70 p-3.5 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-stone-800 dark:text-zinc-200 flex items-center gap-1.5">
+                <BellPlus className="w-3.5 h-3.5 accent-text" />
+                <span>額外多日／指定日期時間提醒</span>
+              </span>
+              <span className="text-[11px] font-mono text-stone-500 dark:text-zinc-400">
+                可同時新增多組
+              </span>
+            </div>
+
+            {dueDate && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                {prevDayStr && (
+                  <button
+                    type="button"
+                    onClick={() => addExactReminderRule(prevDayStr, '17:00')}
+                    className="rounded-lg border border-stone-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2.5 py-1 text-[11px] font-medium text-stone-700 dark:text-zinc-300 hover:bg-stone-100 dark:hover:bg-zinc-800"
+                  >
+                    + 前一天 ({prevDayStr.slice(5)}) 17:00
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => addExactReminderRule(dueDate, '07:00')}
+                  className="rounded-lg border border-stone-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2.5 py-1 text-[11px] font-medium text-stone-700 dark:text-zinc-300 hover:bg-stone-100 dark:hover:bg-zinc-800"
+                >
+                  + 當日 ({dueDate.slice(5)}) 07:00
+                </button>
+                <button
+                  type="button"
+                  onClick={() => addRelativeReminderRule(1440)}
+                  className="rounded-lg border border-stone-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2.5 py-1 text-[11px] font-medium text-stone-700 dark:text-zinc-300 hover:bg-stone-100 dark:hover:bg-zinc-800"
+                >
+                  + 1 天前
+                </button>
+                <button
+                  type="button"
+                  onClick={() => addRelativeReminderRule(2880)}
+                  className="rounded-lg border border-stone-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2.5 py-1 text-[11px] font-medium text-stone-700 dark:text-zinc-300 hover:bg-stone-100 dark:hover:bg-zinc-800"
+                >
+                  + 2 天前
+                </button>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_auto] gap-2 items-center">
+              <input
+                type="date"
+                aria-label="指定提醒日期"
+                value={exactDateInput}
+                onChange={(e) => setExactDateInput(e.target.value)}
+                className="rounded-lg border border-stone-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2.5 py-1.5 text-xs font-mono text-stone-900 dark:text-zinc-100"
+              />
+              <input
+                type="time"
+                aria-label="指定提醒時間"
+                value={exactTimeInput}
+                onChange={(e) => setExactTimeInput(e.target.value)}
+                className="rounded-lg border border-stone-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2.5 py-1.5 text-xs font-mono text-stone-900 dark:text-zinc-100"
+              />
+              <button
+                type="button"
+                onClick={() => addExactReminderRule(exactDateInput, exactTimeInput)}
+                className="rounded-lg border border-stone-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-1.5 text-xs font-medium accent-text hover:bg-stone-100 dark:hover:bg-zinc-800 whitespace-nowrap min-h-[34px]"
+              >
+                加入指定時間
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[11px] text-stone-500 dark:text-zinc-400">或自訂提前：</span>
+              <input
+                type="number"
+                min={1}
+                max={365}
+                aria-label="自訂提前數值"
+                value={relAmountInput}
+                onChange={(e) => setRelAmountInput(e.target.value)}
+                className="w-16 rounded-lg border border-stone-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1 text-xs font-mono text-stone-900 dark:text-zinc-100"
+              />
+              <select
+                aria-label="自訂提前單位"
+                value={relUnitInput}
+                onChange={(e) => setRelUnitInput(e.target.value as 'minutes' | 'hours' | 'days')}
+                className="rounded-lg border border-stone-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1 text-xs text-stone-900 dark:text-zinc-100"
+              >
+                <option value="minutes">分鐘前</option>
+                <option value="hours">小時前</option>
+                <option value="days">天前</option>
+              </select>
+              <button
+                type="button"
+                onClick={handleAddCustomRelative}
+                className="rounded-lg border border-stone-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2.5 py-1 text-xs font-medium text-stone-700 dark:text-zinc-300 hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[32px]"
+              >
+                加入提前提醒
+              </button>
+            </div>
+
+            {reminderFeedback && (
+              <p className="text-[11px] text-amber-700 dark:text-amber-400">{reminderFeedback}</p>
+            )}
+
+            {customReminders.length > 0 && (
+              <ul className="space-y-1.5 pt-1 border-t border-stone-200/80 dark:border-zinc-800" data-testid="custom-reminders-list">
+                {customReminders.map((rule) => {
+                  const label = formatReminderRuleLabel(rule);
+                  return (
+                    <li
+                      key={rule.id}
+                      className="flex items-center justify-between gap-2 rounded-lg bg-white dark:bg-zinc-900 border border-stone-200/80 dark:border-zinc-800 px-2.5 py-1.5 text-xs"
+                    >
+                      <span className="font-mono text-stone-800 dark:text-zinc-200">
+                        {rule.mode === 'exact' ? `指定時間：${label}` : label}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setCustomReminders((prev) => prev.filter((item) => item.id !== rule.id))
+                        }
+                        aria-label={`移除提醒 ${label}`}
+                        className="text-stone-400 hover:text-rose-600 p-1 rounded"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
           </div>
 
           <div>

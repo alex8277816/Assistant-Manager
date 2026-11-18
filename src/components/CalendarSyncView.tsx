@@ -26,6 +26,7 @@ import {
   GOV_OPENDATA_CALENDAR_URL,
   TAIWAN_CITIES,
 } from '../utils/govCalendar';
+import { formatTaskReminderSummary } from '../utils/reminderEngine';
 import { PWAInstallButton } from './PWAInstallButton';
 
 interface CalendarSyncViewProps {
@@ -35,6 +36,8 @@ interface CalendarSyncViewProps {
   govCache: GovSyncCache;
   govSyncing: boolean;
   isSpeaking: boolean;
+  cloudConnected?: boolean;
+  vaultUnlocked?: boolean;
   onSelectDate: (dateStr: string) => void;
   onEditTask: (task: TaskItem) => void;
   onRescheduleTask: (taskId: string, newDate: string, newTime?: string) => void;
@@ -57,6 +60,8 @@ export const CalendarSyncView: React.FC<CalendarSyncViewProps> = ({
   govCache,
   govSyncing,
   isSpeaking,
+  cloudConnected = false,
+  vaultUnlocked = false,
   onSelectDate,
   onEditTask,
   onRescheduleTask,
@@ -196,6 +201,11 @@ export const CalendarSyncView: React.FC<CalendarSyncViewProps> = ({
             </h1>
             <p className="text-sm text-stone-600 dark:text-zinc-400 mt-0.5">
               支援標準 RFC 5545 (.ics) 行事曆匯入與匯出，點選任一日期即可檢視或調整所有待辦事項。
+              {cloudConnected && !vaultUnlocked && (
+                <span className="ml-1 text-amber-700 dark:text-amber-400 font-medium">
+                  （已連線雲端，請至「備份與主題」解鎖金鑰以同步更新）
+                </span>
+              )}
             </p>
           </div>
 
@@ -535,6 +545,10 @@ export const CalendarSyncView: React.FC<CalendarSyncViewProps> = ({
                         </p>
                         <p className="text-xs text-stone-500 dark:text-zinc-400 mt-0.5 font-mono tabular-nums">
                           {task.startTime || '全天'} · {task.tags.join(' / ')}
+                          {(() => {
+                            const remSummary = !task.completed ? formatTaskReminderSummary(task) : null;
+                            return remSummary ? ` · ${remSummary}` : '';
+                          })()}
                         </p>
                       </div>
                       <div className="flex items-center gap-1.5 shrink-0">

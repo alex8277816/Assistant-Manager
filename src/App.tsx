@@ -3,6 +3,7 @@ import {
   Calendar,
   CheckSquare,
   FileText,
+  Link2,
   Moon,
   Plus,
   Puzzle,
@@ -11,6 +12,7 @@ import {
   Sun,
   Users,
   Volume2,
+  X,
 } from 'lucide-react';
 import type { User } from 'firebase/auth';
 import {
@@ -23,6 +25,7 @@ import {
   type MainTab,
   type MemoItem,
   type PluginLogEntry,
+  type QuickLinkItem,
   type TaskItem,
   type ThemeSettings,
   type VaultState,
@@ -30,9 +33,12 @@ import {
   type WorkflowPlugin,
 } from './types/assistant';
 import {
+  clearSessionCryptoKey,
   createSeedWorkspace,
   getTodayDateStr,
+  loadSessionCryptoKey,
   loadWorkspaceFromOffline,
+  saveSessionCryptoKey,
   saveWorkspaceToOffline,
 } from './services/offlineStore';
 import {
@@ -80,6 +86,7 @@ import {
 import { parseQuickTaskInput } from './utils/smartEngine';
 import { findItemsNeedingPush, mergeSyncedCollection } from './utils/syncMerge';
 import { buildNewBusinessCard, type BusinessCardDraft } from './utils/cardHelpers';
+import { buildQuickLinkItem } from './utils/quickLinks';
 import {
   formatFirestoreSyncError,
   isOfflineSyncError,
@@ -108,12 +115,17 @@ import { FloatingNotificationStack } from './components/FloatingNotificationStac
 import { GovAlertBanner } from './components/GovAlertBanner';
 import { OfflineBanner, PWAInstallButton } from './components/PWAInstallButton';
 import { ReminderBanner } from './components/ReminderBanner';
+import { SidebarQuickLinks } from './components/SidebarQuickLinks';
 import { TodayScheduleView } from './components/TodayScheduleView';
 import { CalendarSyncView } from './components/CalendarSyncView';
 import { MemosView } from './components/MemosView';
 import { PluginsView } from './components/PluginsView';
 import { SettingsBackupView } from './components/SettingsBackupView';
 import { TaskModal } from './components/TaskModal';
+
+function nextItemVersion(current: unknown): number {
+  return (typeof current === 'number' && Number.isFinite(current) ? current : 1) + 1;
+}
 
 const NAV_ITEMS: Array<{ id: MainTab; label: string; mobileLabel: string; icon: React.ComponentType<{ className?: string }> }> = [
   { id: 'today', label: '今日排程', mobileLabel: '今日', icon: CheckSquare },
@@ -137,6 +149,10 @@ export default function App() {
   const [businessCards, setBusinessCards] = useState<BusinessCardItem[]>(
     initialSeed.businessCards || []
   );
+  const [quickLinks, setQuickLinks] = useState<QuickLinkItem[]>(
+    initialSeed.quickLinks || []
+  );
+  const [isMobileLinksOpen, setIsMobileLinksOpen] = useState(false);
   const [theme, setTheme] = useState<ThemeSettings>(initialSeed.theme);
   const [voice, setVoice] = useState<VoiceSettings>(initialSeed.voice);
   const [vault, setVault] = useState<VaultState>(initialSeed.vault);
@@ -157,14 +173,16 @@ export default function App() {
     memos: MemoItem[];
     plugins: WorkflowPlugin[];
     cards: BusinessCardItem[];
-  }>({ tasks: [], memos: [], plugins: [], cards: [] });
+    links: QuickLinkItem[];
+  }>({ tasks: [], memos: [], plugins: [], cards: [], links: [] });
   const latestCollectionsRef = useRef({
     tasks,
     memos,
     plugins,
     businessCards,
+    quickLinks,
   });
-  latestCollectionsRef.current = { tasks, memos, plugins, businessCards };
+  latestCollectionsRef.current = { tasks, memos, plugins, businessCards, quickLinks };
 
   // Runtime non-persisted state
   const [cryptoKey, setCryptoKey] = useState<CryptoKey | null>(null);
@@ -252,9 +270,13 @@ export default function App() {
       setMemos(ws.memos);
       setPlugins(ws.plugins);
       setBusinessCards(ws.businessCards || createSeedWorkspace().businessCards || []);
+      setQuickLinks(ws.quickLinks || []);
       setTheme(ws.theme);
       setVoice(ws.voice);
-      setVault({ ...ws.vault, unlocked: false });
+      setVault((prev) => ({
+        ...ws.vault,
+        unlocked: prev.unlocked,
+      }));
       if (ws.govSettings) setGovSettings(ws.govSettings);
       if (ws.govCache) setGovCache(ws.govCache);
       setLastSyncedAt(ws.lastSyncedAt);
@@ -301,6 +323,7 @@ export default function App() {
           setMemos(ws.memos);
           setPlugins(ws.plugins);
           setBusinessCards(ws.businessCards || []);
+          setQuickLinks(ws.quickLinks || []);
           setTheme(ws.theme);
           setVoice(ws.voice);
           if (ws.govSettings) setGovSettings(ws.govSettings);
@@ -328,6 +351,7 @@ export default function App() {
       memos,
       plugins,
       businessCards,
+      quickLinks,
       theme,
       voice,
       vault: { ...vault, unlocked: false },
@@ -343,7 +367,7 @@ export default function App() {
         }
       })
       .catch(() => {});
-  }, [loaded, tasks, memos, plugins, businessCards, theme, voice, vault, govSettings, govCache, lastSyncedAt]);
+  }, [loaded, tasks, memos, plugins, businessCards, quickLinks, theme, voice, vault, govSettings, govCache, lastSyncedAt]);
 
   // 3. Apply Dark Mode & Custom Accent Theme to <html>
   useEffect(() => {
@@ -371,15 +395,19 @@ export default function App() {
       .catch(() => {});
   }, [cryptoKey, tasks]);
 
-  // 5. Subscribe Firebase Auth state
+  // 5. Subscribe Firebase Auth state and restore cached non-extractable session CryptoKey if valid
   useEffect(() => {
     const unsub = subscribeAuth(async (nextUser) => {
       setUser(nextUser);
       if (nextUser) {
+        let checkCipher = vaultRef.current.checkCipher;
+        let checkIv = vaultRef.current.checkIv;
         try {
           const remoteMeta = await fetchUserVaultMeta(nextUser.uid);
           if (remoteMeta) {
             remoteMetaExistsRef.current = true;
+            checkCipher = remoteMeta.vaultCheckCipher;
+            checkIv = remoteMeta.vaultCheckIv;
             setVault((prev) => ({
               ...prev,
               initialized: true,
@@ -399,6 +427,22 @@ export default function App() {
           setCloudBackups(backups);
         } catch {
           // Offline or unverified; stay gracefully in local-first mode
+        }
+
+        // Auto-restore non-extractable session CryptoKey across page reloads
+        if (checkCipher && checkIv) {
+          try {
+            const cachedKey = await loadSessionCryptoKey(nextUser.uid);
+            if (cachedKey) {
+              const valid = await verifyVaultCheck(cachedKey, checkCipher, checkIv);
+              if (valid) {
+                setCryptoKey(cachedKey);
+                setVault((prev) => ({ ...prev, initialized: true, unlocked: true }));
+              }
+            }
+          } catch {
+            // Keep locked if key check fails
+          }
         }
       } else {
         remoteMetaExistsRef.current = false;
@@ -439,6 +483,7 @@ export default function App() {
         memos?: MemoItem[];
         plugins?: WorkflowPlugin[];
         cards?: BusinessCardItem[];
+        links?: QuickLinkItem[];
       }
     ): Promise<number> => {
       if (inFlightFlushRef.current && !overrideSnapshot) {
@@ -494,15 +539,18 @@ export default function App() {
             const mergedMemos = mergeSyncedCollection(overrideSnapshot?.memos ?? current.memos, batch.memos);
             const mergedPlugins = mergeSyncedCollection(overrideSnapshot?.plugins ?? current.plugins, batch.plugins);
             const mergedCards = mergeSyncedCollection(overrideSnapshot?.cards ?? current.businessCards, batch.cards);
+            const mergedLinks = mergeSyncedCollection(overrideSnapshot?.links ?? current.quickLinks, batch.links);
             setTasks(mergedTasks);
             setMemos(mergedMemos);
             setPlugins(mergedPlugins);
             setBusinessCards(mergedCards);
+            setQuickLinks(mergedLinks);
             current = {
               tasks: mergedTasks,
               memos: mergedMemos,
               plugins: mergedPlugins,
               businessCards: mergedCards,
+              quickLinks: mergedLinks,
             };
           } catch (err) {
             setSyncDiagnostics((prev) => ({
@@ -517,19 +565,27 @@ export default function App() {
         const pushMemos = findItemsNeedingPush(overrideSnapshot?.memos ?? current.memos, remote.memos);
         const pushPlugins = findItemsNeedingPush(overrideSnapshot?.plugins ?? current.plugins, remote.plugins);
         const pushCards = findItemsNeedingPush(overrideSnapshot?.cards ?? current.businessCards, remote.cards);
+        const pushLinks = findItemsNeedingPush(overrideSnapshot?.links ?? current.quickLinks, remote.links);
 
         const remoteTaskMap = new Map(remote.tasks.map((t) => [t.id, t]));
         const remoteMemoMap = new Map(remote.memos.map((m) => [m.id, m]));
         const remotePluginMap = new Map(remote.plugins.map((p) => [p.id, p]));
         const remoteCardMap = new Map(remote.cards.map((c) => [c.id, c]));
+        const remoteLinkMap = new Map(remote.links.map((l) => [l.id, l]));
 
-        const totalToPush = pushTasks.length + pushMemos.length + pushPlugins.length + pushCards.length;
+        const totalToPush =
+          pushTasks.length +
+          pushMemos.length +
+          pushPlugins.length +
+          pushCards.length +
+          pushLinks.length;
         if (totalToPush === 0) return 0;
 
         const pushedTaskAt = new Map<string, number>();
         const pushedMemoAt = new Map<string, number>();
         const pushedPluginAt = new Map<string, number>();
         const pushedCardAt = new Map<string, number>();
+        const pushedLinkAt = new Map<string, number>();
 
         setSyncingNow(true);
         try {
@@ -569,10 +625,25 @@ export default function App() {
             pushedCardAt.set(c.id, c.updatedAt);
             remoteCardMap.set(c.id, { ...c, syncStatus: 'synced' });
           }
+          for (const l of pushLinks) {
+            const r = remoteLinkMap.get(l.id);
+            await pushEncryptedSyncItem(targetUser.uid, targetKey, 'link', l, {
+              knownRemoteExists: Boolean(r),
+              knownRemoteVersion: r?.version,
+            });
+            pushedLinkAt.set(l.id, l.updatedAt);
+            remoteLinkMap.set(l.id, { ...l, syncStatus: 'synced' });
+          }
 
           setLastSyncedAt(Date.now());
           setSyncDiagnostics((prev) => ({ ...prev, lastError: null }));
-          return pushedTaskAt.size + pushedMemoAt.size + pushedPluginAt.size + pushedCardAt.size;
+          return (
+            pushedTaskAt.size +
+            pushedMemoAt.size +
+            pushedPluginAt.size +
+            pushedCardAt.size +
+            pushedLinkAt.size
+          );
         } catch (err) {
           setSyncDiagnostics((prev) => ({
             ...prev,
@@ -585,6 +656,7 @@ export default function App() {
             memos: Array.from(remoteMemoMap.values()),
             plugins: Array.from(remotePluginMap.values()),
             cards: Array.from(remoteCardMap.values()),
+            links: Array.from(remoteLinkMap.values()),
           };
           if (pushedTaskAt.size > 0) {
             setTasks((prev) =>
@@ -611,6 +683,13 @@ export default function App() {
             setBusinessCards((prev) =>
               prev.map((c) =>
                 pushedCardAt.get(c.id) === c.updatedAt ? { ...c, syncStatus: 'synced' } : c
+              )
+            );
+          }
+          if (pushedLinkAt.size > 0) {
+            setQuickLinks((prev) =>
+              prev.map((l) =>
+                pushedLinkAt.get(l.id) === l.updatedAt ? { ...l, syncStatus: 'synced' } : l
               )
             );
           }
@@ -646,6 +725,7 @@ export default function App() {
         setMemos((prev) => mergeSyncedCollection(prev, batch.memos));
         setPlugins((prev) => mergeSyncedCollection(prev, batch.plugins));
         setBusinessCards((prev) => mergeSyncedCollection(prev, batch.cards));
+        setQuickLinks((prev) => mergeSyncedCollection(prev, batch.links));
         setLastSyncedAt(Date.now());
 
         // Automatically push any local offline edits or new items not yet on remote
@@ -653,8 +733,14 @@ export default function App() {
         const pendingMemos = findItemsNeedingPush(current.memos, batch.memos);
         const pendingPlugins = findItemsNeedingPush(current.plugins, batch.plugins);
         const pendingCards = findItemsNeedingPush(current.businessCards, batch.cards);
+        const pendingLinks = findItemsNeedingPush(current.quickLinks, batch.links);
         if (
-          pendingTasks.length + pendingMemos.length + pendingPlugins.length + pendingCards.length > 0
+          pendingTasks.length +
+            pendingMemos.length +
+            pendingPlugins.length +
+            pendingCards.length +
+            pendingLinks.length >
+          0
         ) {
           flushPendingItemsToCloud(user, cryptoKey).catch(() => {});
         }
@@ -689,7 +775,8 @@ export default function App() {
         col.tasks.some((t) => t.syncStatus === 'pending') ||
         col.memos.some((m) => m.syncStatus === 'pending') ||
         col.plugins.some((p) => p.syncStatus === 'pending') ||
-        col.businessCards.some((c) => c.syncStatus === 'pending');
+        col.businessCards.some((c) => c.syncStatus === 'pending') ||
+        col.quickLinks.some((l) => l.syncStatus === 'pending');
       if (hasPending) {
         flushPendingItemsToCloud(user, cryptoKey).catch(() => {});
       }
@@ -705,8 +792,8 @@ export default function App() {
 
   const syncSingleItemToCloud = useCallback(
     async (
-      kind: 'task' | 'memo' | 'plugin' | 'card',
-      item: TaskItem | MemoItem | WorkflowPlugin | BusinessCardItem
+      kind: 'task' | 'memo' | 'plugin' | 'card' | 'link',
+      item: TaskItem | MemoItem | WorkflowPlugin | BusinessCardItem | QuickLinkItem
     ) => {
       if (!user || !cryptoKey) return;
       const remoteSnap = remoteSnapshotRef.current;
@@ -717,7 +804,9 @@ export default function App() {
             ? remoteSnap.memos.find((m) => m.id === item.id)
             : kind === 'plugin'
               ? remoteSnap.plugins.find((p) => p.id === item.id)
-              : remoteSnap.cards.find((c) => c.id === item.id);
+              : kind === 'card'
+                ? remoteSnap.cards.find((c) => c.id === item.id)
+                : remoteSnap.links.find((l) => l.id === item.id);
       try {
         await pushEncryptedSyncItem(user.uid, cryptoKey, kind, item, {
           knownRemoteExists: Boolean(existingRemote),
@@ -774,6 +863,18 @@ export default function App() {
           setBusinessCards((prev) =>
             prev.map((c) => (c.id === item.id && c.updatedAt === item.updatedAt ? { ...c, syncStatus: 'synced' } : c))
           );
+        } else if (kind === 'link') {
+          const syncedLink = { ...(item as QuickLinkItem), syncStatus: 'synced' as const };
+          remoteSnapshotRef.current = {
+            ...remoteSnapshotRef.current,
+            links: [
+              ...remoteSnapshotRef.current.links.filter((l) => l.id !== item.id),
+              syncedLink,
+            ],
+          };
+          setQuickLinks((prev) =>
+            prev.map((l) => (l.id === item.id && l.updatedAt === item.updatedAt ? { ...l, syncStatus: 'synced' } : l))
+          );
         }
         setLastSyncedAt(Date.now());
         setSyncDiagnostics((prev) => (prev.lastError ? { ...prev, lastError: null } : prev));
@@ -800,29 +901,31 @@ export default function App() {
       due.forEach((alert) => {
         const task = tasks.find((t) => t.id === alert.taskId);
         if (task) {
-          triggeredKeysRef.current.add(buildReminderTriggerKey(task));
+          triggeredKeysRef.current.add(alert.triggerKey || buildReminderTriggerKey(task));
+          const labelSuffix = alert.reminderLabel ? `（${alert.reminderLabel}）` : '';
           if (voice.autoSpeakReminders && task.voiceReminder) {
             speakText(
-              `${task.isMeeting ? '會議提醒' : '任務提醒'}：${task.title}，預定時間 ${task.startTime || ''}`,
+              `${task.isMeeting ? '會議提醒' : '任務提醒'}${labelSuffix}：${task.title}，預定時間 ${task.startTime || ''}`,
               voice,
               task.title
             );
           }
           pushFloatingNotification({
-            id: `due-${task.id}`,
+            id: `due-${alert.triggerKey || task.id}`,
             kind: task.isMeeting ? 'meeting' : 'todo',
             title: task.title,
-            body: `${task.dueDate} ${task.startTime || ''} · ${
-              task.isMeeting ? '預定會議即將開始' : '任務提醒時間已到'
-            }`,
-            voiceText: `${task.isMeeting ? '會議提醒' : '任務提醒'}：${task.title}，預定時間 ${task.startTime || ''}`,
+            body: `${task.dueDate} ${task.startTime || ''} · ${alert.reminderLabel || (task.isMeeting ? '預定會議提醒' : '任務提醒')}`,
+            voiceText: `${task.isMeeting ? '會議提醒' : '任務提醒'}${labelSuffix}：${task.title}，預定時間 ${task.startTime || ''}`,
           });
         }
       });
 
       setActiveAlerts((prev) => {
-        const existingIds = new Set(prev.map((a) => a.taskId));
-        return [...prev, ...due.filter((d) => !existingIds.has(d.taskId))];
+        const existingKeys = new Set(prev.map((a) => a.triggerKey || a.taskId));
+        return [
+          ...prev,
+          ...due.filter((d) => !existingKeys.has(d.triggerKey || d.taskId)),
+        ];
       });
     };
 
@@ -1051,7 +1154,7 @@ export default function App() {
       reminderMinutes: parsed.startTime ? 15 : -1,
       voiceReminder: true,
       version: 1,
-      syncStatus: user && cryptoKey ? 'pending' : 'local',
+      syncStatus: user ? 'pending' : 'local',
       createdAt: now,
       updatedAt: now,
     };
@@ -1084,8 +1187,8 @@ export default function App() {
         ? {
             ...existing,
             ...draft,
-            version: existing.version + 1,
-            syncStatus: user && cryptoKey ? 'pending' : 'local',
+            version: nextItemVersion(existing.version),
+            syncStatus: user ? 'pending' : 'local',
             updatedAt: now,
           }
         : null;
@@ -1099,11 +1202,17 @@ export default function App() {
         ...draft,
         id: `task-${now}-${Math.random().toString(36).slice(2, 6)}`,
         version: 1,
-        syncStatus: user && cryptoKey ? 'pending' : 'local',
+        syncStatus: user ? 'pending' : 'local',
         createdAt: now,
         updatedAt: now,
       };
-      const { task: processed } = applyWorkflowPlugins(created, plugins, 'on_task_create');
+      const { task: pluginTagged } = applyWorkflowPlugins(created, plugins, 'on_task_create');
+      const processed: TaskItem = {
+        ...pluginTagged,
+        priority: created.priority,
+        reminderMinutes: created.reminderMinutes,
+        voiceReminder: created.voiceReminder,
+      };
       setTasks((prev) => [processed, ...prev]);
       setSelectedDate(processed.dueDate);
       syncSingleItemToCloud('task', processed);
@@ -1120,8 +1229,8 @@ export default function App() {
       ? {
           ...existing,
           deleted: true,
-          version: existing.version + 1,
-          syncStatus: user && cryptoKey ? 'pending' : 'local',
+          version: nextItemVersion(existing.version),
+          syncStatus: user ? 'pending' : 'local',
           updatedAt: now,
         }
       : null;
@@ -1139,8 +1248,8 @@ export default function App() {
       ? {
           ...existing,
           completed: !existing.completed,
-          version: existing.version + 1,
-          syncStatus: user && cryptoKey ? 'pending' : 'local',
+          version: nextItemVersion(existing.version),
+          syncStatus: user ? 'pending' : 'local',
           updatedAt: now,
         }
       : null;
@@ -1162,8 +1271,8 @@ export default function App() {
           ...existing,
           dueDate: newDate,
           startTime: newTime ?? existing.startTime,
-          version: existing.version + 1,
-          syncStatus: user && cryptoKey ? 'pending' : 'local',
+          version: nextItemVersion(existing.version),
+          syncStatus: user ? 'pending' : 'local',
           updatedAt: now,
         }
       : null;
@@ -1188,7 +1297,7 @@ export default function App() {
       reminderMinutes: ev.reminderMinutes,
       voiceReminder: true,
       version: 1,
-      syncStatus: user && cryptoKey ? 'pending' : 'local',
+      syncStatus: user ? 'pending' : 'local',
       createdAt: now,
       updatedAt: now,
     }));
@@ -1209,8 +1318,8 @@ export default function App() {
         ? {
             ...existing,
             ...draft,
-            version: existing.version + 1,
-            syncStatus: user && cryptoKey ? 'pending' : 'local',
+            version: nextItemVersion(existing.version),
+            syncStatus: user ? 'pending' : 'local',
             updatedAt: now,
           }
         : null;
@@ -1221,7 +1330,7 @@ export default function App() {
         ...draft,
         id: `memo-${now}-${Math.random().toString(36).slice(2, 6)}`,
         version: 1,
-        syncStatus: user && cryptoKey ? 'pending' : 'local',
+        syncStatus: user ? 'pending' : 'local',
         createdAt: now,
         updatedAt: now,
       };
@@ -1237,8 +1346,8 @@ export default function App() {
       ? {
           ...existing,
           deleted: true,
-          version: existing.version + 1,
-          syncStatus: user && cryptoKey ? 'pending' : 'local',
+          version: nextItemVersion(existing.version),
+          syncStatus: user ? 'pending' : 'local',
           updatedAt: now,
         }
       : null;
@@ -1256,8 +1365,8 @@ export default function App() {
         ? {
             ...existing,
             ...draft,
-            version: existing.version + 1,
-            syncStatus: user && cryptoKey ? 'pending' : 'local',
+            version: nextItemVersion(existing.version),
+            syncStatus: user ? 'pending' : 'local',
             updatedAt: now,
           }
         : null;
@@ -1270,7 +1379,7 @@ export default function App() {
       const created = buildNewBusinessCard(
         draft,
         now,
-        user && cryptoKey ? 'pending' : 'local'
+        user ? 'pending' : 'local'
       );
       setBusinessCards((prev) => [created, ...prev]);
       syncSingleItemToCloud('card', created);
@@ -1285,8 +1394,8 @@ export default function App() {
       ? {
           ...existing,
           deleted: true,
-          version: existing.version + 1,
-          syncStatus: user && cryptoKey ? 'pending' : 'local',
+          version: nextItemVersion(existing.version),
+          syncStatus: user ? 'pending' : 'local',
           updatedAt: now,
         }
       : null;
@@ -1295,6 +1404,49 @@ export default function App() {
     );
     if (deletedCard) syncSingleItemToCloud('card', deletedCard);
     showToast('已刪除名片');
+  };
+
+  // Quick Links CRUD
+  const handleAddQuickLink = (name: string, url: string) => {
+    const created = buildQuickLinkItem(name, url, Date.now(), user ? 'pending' : 'local');
+    setQuickLinks((prev) => [...prev, created]);
+    syncSingleItemToCloud('link', created);
+    showToast(`已新增常用連結「${created.name}」`);
+  };
+
+  const handleUpdateQuickLink = (id: string, name: string, url: string) => {
+    const now = Date.now();
+    const existing = latestCollectionsRef.current.quickLinks.find((l) => l.id === id);
+    const updated: QuickLinkItem | null = existing
+      ? {
+          ...existing,
+          name,
+          url,
+          version: nextItemVersion(existing.version),
+          syncStatus: user ? 'pending' : 'local',
+          updatedAt: now,
+        }
+      : null;
+    setQuickLinks((prev) => prev.map((l) => (l.id === id && updated ? updated : l)));
+    if (updated) syncSingleItemToCloud('link', updated);
+    showToast(`已更新連結「${name}」`);
+  };
+
+  const handleDeleteQuickLink = (id: string) => {
+    const now = Date.now();
+    const existing = latestCollectionsRef.current.quickLinks.find((l) => l.id === id);
+    const deletedLink: QuickLinkItem | null = existing
+      ? {
+          ...existing,
+          deleted: true,
+          version: nextItemVersion(existing.version),
+          syncStatus: user ? 'pending' : 'local',
+          updatedAt: now,
+        }
+      : null;
+    setQuickLinks((prev) => prev.map((l) => (l.id === id && deletedLink ? deletedLink : l)));
+    if (deletedLink) syncSingleItemToCloud('link', deletedLink);
+    showToast('已移除常用連結');
   };
 
   // Vault & Backup Handlers (Cloud vault metadata always takes precedence when authenticated)
@@ -1358,6 +1510,7 @@ export default function App() {
         setSyncDiagnostics((prev) => ({ ...prev, lastError: null }));
       }
       if (activeUser) {
+        saveSessionCryptoKey(activeUser.uid, key).catch(() => {});
         flushPendingItemsToCloud(activeUser, key).catch(() => {});
       }
       return true;
@@ -1404,6 +1557,7 @@ export default function App() {
     });
 
     if (activeUser) {
+      saveSessionCryptoKey(activeUser.uid, key).catch(() => {});
       flushPendingItemsToCloud(activeUser, key).catch(() => {});
     }
     return true;
@@ -1433,9 +1587,10 @@ export default function App() {
     setAuthLoading(true);
     try {
       clearSyncRuntimeCaches();
+      await clearSessionCryptoKey();
       remoteSyncedOnceRef.current = false;
       remoteMetaExistsRef.current = false;
-      remoteSnapshotRef.current = { tasks: [], memos: [], plugins: [], cards: [] };
+      remoteSnapshotRef.current = { tasks: [], memos: [], plugins: [], cards: [], links: [] };
       const { user: authedUser, displayLabel } = await registerSyncAccount(identifier, password);
       return await finalizeSyncAuth(authedUser, password, displayLabel);
     } catch (err) {
@@ -1454,9 +1609,10 @@ export default function App() {
     setAuthLoading(true);
     try {
       clearSyncRuntimeCaches();
+      await clearSessionCryptoKey();
       remoteSyncedOnceRef.current = false;
       remoteMetaExistsRef.current = false;
-      remoteSnapshotRef.current = { tasks: [], memos: [], plugins: [], cards: [] };
+      remoteSnapshotRef.current = { tasks: [], memos: [], plugins: [], cards: [], links: [] };
       const { user: authedUser, displayLabel } = await signInSyncAccount(identifier, password);
       return await finalizeSyncAuth(authedUser, password, displayLabel);
     } catch (err) {
@@ -1477,9 +1633,10 @@ export default function App() {
       setAuthLoading(true);
       try {
         clearSyncRuntimeCaches();
+        await clearSessionCryptoKey();
         remoteSyncedOnceRef.current = false;
         remoteMetaExistsRef.current = false;
-        remoteSnapshotRef.current = { tasks: [], memos: [], plugins: [], cards: [] };
+        remoteSnapshotRef.current = { tasks: [], memos: [], plugins: [], cards: [], links: [] };
         const { user: authedUser, formattedSerial } = await connectWithSyncSerial(
           serial,
           syncPassword,
@@ -1525,6 +1682,7 @@ export default function App() {
               setMemos((prev) => mergeSyncedCollection(prev, res.batch.memos));
               setPlugins((prev) => mergeSyncedCollection(prev, res.batch.plugins));
               setBusinessCards((prev) => mergeSyncedCollection(prev, res.batch.cards));
+              setQuickLinks((prev) => mergeSyncedCollection(prev, res.batch.links));
               setSyncDiagnostics({ ...res.diagnostics, lastError: null });
               return res.diagnostics;
             })
@@ -1551,11 +1709,12 @@ export default function App() {
 
   const handleCreateCloudBackup = async (label: string) => {
     if (!user || !activePassphrase) return;
-    const payload = { tasks, memos, plugins, businessCards, theme, voice };
+    const payload = { tasks, memos, plugins, businessCards, quickLinks, theme, voice };
     const totalCount =
       tasks.filter((t) => !t.deleted).length +
       memos.filter((m) => !m.deleted).length +
-      businessCards.filter((c) => !c.deleted).length;
+      businessCards.filter((c) => !c.deleted).length +
+      quickLinks.filter((l) => !l.deleted).length;
     const archive = await createEncryptedArchive(activePassphrase, payload, totalCount);
     const backupId = `bkp-${Date.now()}`;
     await createCloudBackupSnapshot(user.uid, {
@@ -1582,6 +1741,7 @@ export default function App() {
         memos: MemoItem[];
         plugins: WorkflowPlugin[];
         businessCards?: BusinessCardItem[];
+        quickLinks?: QuickLinkItem[];
         theme?: ThemeSettings;
         voice?: VoiceSettings;
       }>(pwd, backup);
@@ -1597,11 +1757,15 @@ export default function App() {
       const restoredCards = Array.isArray(restored.businessCards)
         ? restored.businessCards.map((c) => ({ ...c, updatedAt: Math.max(c.updatedAt, Date.now()), syncStatus: 'pending' as const }))
         : undefined;
+      const restoredLinks = Array.isArray(restored.quickLinks)
+        ? restored.quickLinks.map((l) => ({ ...l, updatedAt: Math.max(l.updatedAt, Date.now()), syncStatus: 'pending' as const }))
+        : undefined;
 
       if (restoredTasks) setTasks(restoredTasks);
       if (restoredMemos) setMemos(restoredMemos);
       if (restoredPlugins) setPlugins(restoredPlugins);
       if (restoredCards) setBusinessCards(restoredCards);
+      if (restoredLinks) setQuickLinks(restoredLinks);
       if (restored.theme) setTheme(restored.theme);
       if (restored.voice) setVoice(restored.voice);
       if (user && cryptoKey) {
@@ -1610,6 +1774,7 @@ export default function App() {
           memos: restoredMemos,
           plugins: restoredPlugins,
           cards: restoredCards,
+          links: restoredLinks,
         }).catch(() => {});
       }
       showToast(`已從雲端備份「${backup.label}」還原所有資料`);
@@ -1620,11 +1785,12 @@ export default function App() {
   };
 
   const handleExportEncryptedFile = async (passphrase: string) => {
-    const payload = { tasks, memos, plugins, businessCards, theme, voice };
+    const payload = { tasks, memos, plugins, businessCards, quickLinks, theme, voice };
     const totalCount =
       tasks.filter((t) => !t.deleted).length +
       memos.filter((m) => !m.deleted).length +
-      businessCards.filter((c) => !c.deleted).length;
+      businessCards.filter((c) => !c.deleted).length +
+      quickLinks.filter((l) => !l.deleted).length;
     const archive = await createEncryptedArchive(passphrase, payload, totalCount);
     const blob = new Blob([JSON.stringify(archive, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -1644,6 +1810,7 @@ export default function App() {
         memos: MemoItem[];
         plugins: WorkflowPlugin[];
         businessCards?: BusinessCardItem[];
+        quickLinks?: QuickLinkItem[];
         theme?: ThemeSettings;
         voice?: VoiceSettings;
       }>(passphrase, archive);
@@ -1659,11 +1826,15 @@ export default function App() {
       const restoredCards = Array.isArray(restored.businessCards)
         ? restored.businessCards.map((c) => ({ ...c, updatedAt: Math.max(c.updatedAt, Date.now()), syncStatus: 'pending' as const }))
         : undefined;
+      const restoredLinks = Array.isArray(restored.quickLinks)
+        ? restored.quickLinks.map((l) => ({ ...l, updatedAt: Math.max(l.updatedAt, Date.now()), syncStatus: 'pending' as const }))
+        : undefined;
 
       if (restoredTasks) setTasks(restoredTasks);
       if (restoredMemos) setMemos(restoredMemos);
       if (restoredPlugins) setPlugins(restoredPlugins);
       if (restoredCards) setBusinessCards(restoredCards);
+      if (restoredLinks) setQuickLinks(restoredLinks);
       if (restored.theme) setTheme(restored.theme);
       if (restored.voice) setVoice(restored.voice);
       if (user && cryptoKey) {
@@ -1672,6 +1843,7 @@ export default function App() {
           memos: restoredMemos,
           plugins: restoredPlugins,
           cards: restoredCards,
+          links: restoredLinks,
         }).catch(() => {});
       }
       return true;
@@ -1687,13 +1859,15 @@ export default function App() {
       memos: current.memos,
       plugins: current.plugins,
       businessCards: current.businessCards,
+      quickLinks: current.quickLinks,
       theme,
       voice,
     };
     const totalCount =
       current.tasks.filter((t) => !t.deleted).length +
       current.memos.filter((m) => !m.deleted).length +
-      current.businessCards.filter((c) => !c.deleted).length;
+      current.businessCards.filter((c) => !c.deleted).length +
+      current.quickLinks.filter((l) => !l.deleted).length;
     return encodeEncryptedSyncCode(passphrase, payload, totalCount);
   };
 
@@ -1707,13 +1881,14 @@ export default function App() {
         memos?: MemoItem[];
         plugins?: WorkflowPlugin[];
         businessCards?: BusinessCardItem[];
+        quickLinks?: QuickLinkItem[];
         theme?: ThemeSettings;
         voice?: VoiceSettings;
       }>(passphrase, rawCode);
 
       const current = latestCollectionsRef.current;
       const syncMark = user && cryptoKey ? ('pending' as const) : ('local' as const);
-      const bump = (items?: Array<TaskItem | MemoItem | WorkflowPlugin | BusinessCardItem>) =>
+      const bump = (items?: Array<TaskItem | MemoItem | WorkflowPlugin | BusinessCardItem | QuickLinkItem>) =>
         Array.isArray(items)
           ? items.map((item) => ({ ...item, syncStatus: syncMark }))
           : [];
@@ -1730,11 +1905,15 @@ export default function App() {
       const mergedCards = restored.businessCards
         ? mergeSyncedCollection(current.businessCards, bump(restored.businessCards) as BusinessCardItem[])
         : current.businessCards;
+      const mergedLinks = restored.quickLinks
+        ? mergeSyncedCollection(current.quickLinks, bump(restored.quickLinks) as QuickLinkItem[])
+        : current.quickLinks;
 
       setTasks(mergedTasks);
       setMemos(mergedMemos);
       setPlugins(mergedPlugins);
       setBusinessCards(mergedCards);
+      setQuickLinks(mergedLinks);
       if (restored.theme) setTheme(restored.theme);
       if (restored.voice) setVoice(restored.voice);
 
@@ -1744,6 +1923,7 @@ export default function App() {
           memos: mergedMemos,
           plugins: mergedPlugins,
           cards: mergedCards,
+          links: mergedLinks,
         }).catch(() => {});
       }
       showToast('已成功解密並合併跨裝置加密同步碼的資料');
@@ -1829,35 +2009,44 @@ export default function App() {
     <div className="min-h-screen bg-stone-50 dark:bg-zinc-950 text-stone-900 dark:text-zinc-100 flex flex-col lg:flex-row">
       {/* Desktop Left Sidebar */}
       <aside className="hidden lg:flex lg:flex-col lg:w-60 lg:shrink-0 border-r border-stone-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
-        <div className="h-16 px-6 flex items-center border-b border-stone-200 dark:border-zinc-800">
+        <div className="h-16 px-6 flex items-center border-b border-stone-200 dark:border-zinc-800 shrink-0">
           <span className="font-display text-lg font-bold tracking-tight text-stone-900 dark:text-zinc-100 whitespace-nowrap">
             Kairo 隨行助理
           </span>
         </div>
 
-        <nav aria-label="主導覽列" className="flex-1 p-3 space-y-1">
-          {NAV_ITEMS.map((item) => {
-            const Icon = item.icon;
-            const active = activeTab === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setActiveTab(item.id)}
-                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-colors min-h-[44px] ${
-                  active
-                    ? 'accent-bg'
-                    : 'text-stone-600 dark:text-zinc-400 hover:bg-stone-100 dark:hover:bg-zinc-800 hover:text-stone-900 dark:hover:text-zinc-100'
-                }`}
-              >
-                <Icon className="w-4 h-4 shrink-0" />
-                <span className="whitespace-nowrap">{item.label}</span>
-              </button>
-            );
-          })}
-        </nav>
+        <div className="flex-1 overflow-y-auto">
+          <nav aria-label="主導覽列" className="p-3 space-y-1">
+            {NAV_ITEMS.map((item) => {
+              const Icon = item.icon;
+              const active = activeTab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setActiveTab(item.id)}
+                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-colors min-h-[44px] ${
+                    active
+                      ? 'accent-bg'
+                      : 'text-stone-600 dark:text-zinc-400 hover:bg-stone-100 dark:hover:bg-zinc-800 hover:text-stone-900 dark:hover:text-zinc-100'
+                  }`}
+                >
+                  <Icon className="w-4 h-4 shrink-0" />
+                  <span className="whitespace-nowrap">{item.label}</span>
+                </button>
+              );
+            })}
+          </nav>
 
-        <div className="p-4 border-t border-stone-200 dark:border-zinc-800 space-y-2.5">
+          <SidebarQuickLinks
+            links={quickLinks}
+            onAddLink={handleAddQuickLink}
+            onUpdateLink={handleUpdateQuickLink}
+            onDeleteLink={handleDeleteQuickLink}
+          />
+        </div>
+
+        <div className="p-4 border-t border-stone-200 dark:border-zinc-800 space-y-2.5 shrink-0">
           <button
             type="button"
             onClick={() => {
@@ -1884,7 +2073,7 @@ export default function App() {
         <OfflineBanner />
 
         {/* Top Bar Contract: 3 clean zones separated by gap-8 */}
-        <header className="sticky top-0 z-30 h-14 lg:h-16 px-4 lg:px-8 border-b border-stone-200 dark:border-zinc-800 bg-white/90 dark:bg-zinc-900/90 backdrop-blur-md flex items-center justify-between gap-8">
+        <header className="sticky top-0 z-30 h-14 lg:h-16 px-4 lg:px-8 border-b border-stone-200 dark:border-zinc-800 bg-white/90 dark:bg-zinc-900/90 backdrop-blur-md flex items-center justify-between gap-4 sm:gap-8">
           <div className="min-w-0 flex items-center gap-3">
             <span className="lg:hidden font-display text-base font-bold tracking-tight text-stone-900 dark:text-zinc-100 whitespace-nowrap shrink-0">
               Kairo 助理
@@ -1909,6 +2098,15 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setIsMobileLinksOpen(true)}
+              aria-label="開啟常用連結"
+              className="lg:hidden inline-flex items-center gap-1 rounded-lg border border-stone-200 dark:border-zinc-700 px-2.5 py-1.5 text-xs font-medium text-stone-700 dark:text-zinc-200 hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[38px] whitespace-nowrap"
+            >
+              <Link2 className="w-3.5 h-3.5 accent-text" />
+              <span>常用連結</span>
+            </button>
             {isSpeaking ? (
               <button
                 type="button"
@@ -2061,6 +2259,8 @@ export default function App() {
               govCache={govCache}
               govSyncing={govSyncing}
               isSpeaking={isSpeaking}
+              cloudConnected={Boolean(user)}
+              vaultUnlocked={vault.unlocked}
               onSelectDate={setSelectedDate}
               onEditTask={(task) => {
                 setEditingTask(task);
@@ -2236,7 +2436,8 @@ export default function App() {
                 tasks.filter((t) => t.syncStatus === 'pending').length +
                 memos.filter((m) => m.syncStatus === 'pending').length +
                 plugins.filter((p) => p.syncStatus === 'pending').length +
-                businessCards.filter((c) => c.syncStatus === 'pending').length
+                businessCards.filter((c) => c.syncStatus === 'pending').length +
+                quickLinks.filter((l) => l.syncStatus === 'pending').length
               }
               syncingNow={syncingNow}
               sampleCipherPreview={sampleCipherPreview}
@@ -2246,11 +2447,12 @@ export default function App() {
               onConnectSyncSerial={handleConnectSyncSerial}
               onSignOutSync={async () => {
                 await signOutSyncSession();
+                await clearSessionCryptoKey();
                 setSyncIdentityHint(null);
                 setActiveSyncSerial(null);
                 remoteSyncedOnceRef.current = false;
                 remoteMetaExistsRef.current = false;
-                remoteSnapshotRef.current = { tasks: [], memos: [], plugins: [], cards: [] };
+                remoteSnapshotRef.current = { tasks: [], memos: [], plugins: [], cards: [], links: [] };
                 setSyncDiagnostics({
                   remoteTotalDocs: 0,
                   decryptedCount: 0,
@@ -2264,6 +2466,7 @@ export default function App() {
               }}
               onSetupOrUnlockVault={handleSetupOrUnlockVault}
               onLockVault={() => {
+                clearSessionCryptoKey().catch(() => {});
                 setCryptoKey(null);
                 setActivePassphrase(null);
                 setVault((prev) => ({ ...prev, unlocked: false }));
@@ -2376,6 +2579,37 @@ export default function App() {
             setEditingTask(null);
           }}
         />
+      )}
+
+      {isMobileLinksOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="常用連結管理"
+          className="lg:hidden fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm p-0 sm:p-4"
+        >
+          <div className="w-full sm:max-w-md rounded-t-3xl sm:rounded-2xl border border-stone-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5 shadow-2xl max-h-[85vh] overflow-y-auto space-y-3">
+            <div className="flex items-center justify-between pb-2 border-b border-stone-200 dark:border-zinc-800">
+              <h2 className="text-base font-semibold text-stone-900 dark:text-zinc-100">
+                公司與常用系統連結
+              </h2>
+              <button
+                type="button"
+                onClick={() => setIsMobileLinksOpen(false)}
+                aria-label="關閉常用連結視窗"
+                className="p-2 rounded-lg text-stone-500 hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[38px] min-w-[38px] flex items-center justify-center"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <SidebarQuickLinks
+              links={quickLinks}
+              onAddLink={handleAddQuickLink}
+              onUpdateLink={handleUpdateQuickLink}
+              onDeleteLink={handleDeleteQuickLink}
+            />
+          </div>
+        </div>
       )}
     </div>
   );

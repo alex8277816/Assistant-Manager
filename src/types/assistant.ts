@@ -10,6 +10,14 @@ export type ThemeAccent = 'teal' | 'indigo' | 'emerald' | 'amber' | 'rose';
 
 export type MainTab = 'today' | 'calendar' | 'memos' | 'cards' | 'plugins' | 'settings';
 
+export interface TaskReminderRule {
+  id: string;
+  mode: 'relative' | 'exact';
+  minutesBefore?: number;
+  date?: string; // YYYY-MM-DD
+  time?: string; // HH:mm
+}
+
 export interface TaskItem {
   id: string;
   title: string;
@@ -21,7 +29,8 @@ export interface TaskItem {
   priority: PriorityLevel;
   tags: string[];
   completed: boolean;
-  reminderMinutes: number; // -1 = none, 0 = at time, 5, 15, 30, 60
+  reminderMinutes: number; // -1 = none, 0 = at time, 5..10080 (up to 7 days)
+  customReminders?: TaskReminderRule[];
   voiceReminder: boolean;
   googleEventId?: string;
   version: number;
@@ -114,6 +123,8 @@ export interface CloudBackupRecord {
 
 export interface ActiveReminderAlert {
   taskId: string;
+  triggerKey?: string;
+  reminderLabel?: string;
   title: string;
   dueDate: string;
   startTime?: string;
@@ -207,5 +218,16 @@ export interface FloatingNotificationItem {
   body: string;
   timestamp: number;
   voiceText?: string;
+}
+
+export interface QuickLinkItem {
+  id: string;
+  name: string;
+  url: string;
+  version: number;
+  deleted?: boolean;
+  syncStatus: SyncStatus;
+  createdAt: number;
+  updatedAt: number;
 }
 

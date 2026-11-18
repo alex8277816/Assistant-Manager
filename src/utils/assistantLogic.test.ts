@@ -8,9 +8,13 @@ import {
 } from './smartEngine';
 import { exportTasksToICS, parseICSContent } from './icsSync';
 import {
+  EXTENDED_REMINDER_PRESETS,
   findDueReminders,
   findTodayPendingSummary,
   formatBriefingScript,
+  formatReminderMinutesLabel,
+  formatReminderRuleLabel,
+  formatTaskReminderSummary,
 } from './reminderEngine';
 import {
   buildGoogleCalendarEventPayload,
@@ -53,6 +57,7 @@ import {
   validateAndNormalizeCardDraft,
 } from './cardHelpers';
 import { buildSerialPairingUrl, parseSerialPairingHash } from './pairingLink';
+import { buildQuickLinkItem, validateAndNormalizeQuickLink } from './quickLinks';
 import type { BusinessCardItem, MemoItem, TaskItem, WorkflowPlugin } from '../types/assistant';
 
 const BASE_DATE = '2026-11-12';
@@ -526,4 +531,168 @@ test('isOfflineSyncError and formatFirestoreSyncError detect offline getDoc erro
   assert.equal(isOfflineSyncError(otherErr), false);
   assert.equal(formatFirestoreSyncError(otherErr), 'Missing or insufficient permissions.');
 });
+
+test('extended reminder presets, formatting, and multi-day/exact reminders trigger independently', () => {
+  assert.ok(EXTENDED_REMINDER_PRESETS.some((p) => p.value === 1440 && p.label === '提前 1 天'));
+  assert.ok(EXTENDED_REMINDER_PRESETS.some((p) => p.value === 2880 && p.label === '提前 2 天'));
+  assert.ok(EXTENDED_REMINDER_PRESETS.some((p) => p.value === 10080));
+
+  assert.equal(formatReminderMinutesLabel(1440), '提前 1 天');
+  assert.equal(formatReminderMinutesLabel(2880), '提前 2 天');
+  assert.equal(formatReminderMinutesLabel(10080), '提前 1 週');
+  assert.equal(
+    formatReminderRuleLabel({ id: 'r1', mode: 'exact', date: '2026-11-14', time: '17:00' }),
+    '2026-11-14 17:00'
+  );
+
+  const meeting = makeTask({
+    id: 'mtg-1115',
+    title: '重要合約審閱會議',
+    dueDate: '2026-11-15',
+    startTime: '09:00',
+    isMeeting: true,
+    reminderMinutes: 1440,
+    customReminders: [
+      { id: 'c1', mode: 'exact', date: '2026-11-14', time: '17:00' },
+      { id: 'c2', mode: 'exact', date: '2026-11-15', time: '07:00' },
+      { id: 'c3', mode: 'relative', minutesBefore: 120 },
+    ],
+  });
+
+  const summary = formatTaskReminderSummary(meeting);
+  assert.equal(summary, '提前 1 天 · 指定 2026-11-14 17:00、2026-11-15 07:00 等 3 組');
+
+  const noPrimarySummary = formatTaskReminderSummary({
+    reminderMinutes: -1,
+    customReminders: [{ id: 'c1', mode: 'exact', date: '2026-11-14', time: '17:00' }],
+  });
+  assert.equal(noPrimarySummary, '指定 2026-11-14 17:00');
+
+  const triggered = new Set<string>();
+
+  // Before 1 day prior (2026-11-14 08:30) -> no alerts
+  assert.equal(
+    findDueReminders([meeting], new Date('2026-11-14T08:30:00').getTime(), {}, triggered).length,
+    0
+  );
+
+  // At 2026-11-14 09:05 -> primary 1-day-before reminder fires
+  const dayBeforeAlerts = findDueReminders(
+    [meeting],
+    new Date('2026-11-14T09:05:00').getTime(),
+    {},
+    triggered
+  );
+  assert.equal(dayBeforeAlerts.length, 1);
+  assert.equal(dayBeforeAlerts[0].reminderLabel, '提前 1 天');
+  triggered.add(dayBeforeAlerts[0].triggerKey!);
+
+  // At 2026-11-14 17:05 -> first exact reminder fires independently
+  const eveFiveAlerts = findDueReminders(
+    [meeting],
+    new Date('2026-11-14T17:05:00').getTime(),
+    {},
+    triggered
+  );
+  assert.equal(eveFiveAlerts.length, 1);
+  assert.equal(eveFiveAlerts[0].reminderLabel, '2026-11-14 17:00');
+  triggered.add(eveFiveAlerts[0].triggerKey!);
+
+  // At 2026-11-15 07:05 -> both exact 07:00 and relative 120m before (07:00) fire cleanly
+  const morningAlerts = findDueReminders(
+    [meeting],
+    new Date('2026-11-15T07:05:00').getTime(),
+    {},
+    triggered
+  );
+  assert.equal(morningAlerts.length, 2);
+  assert.ok(morningAlerts.some((a) => a.reminderLabel === '2026-11-15 07:00'));
+  assert.ok(morningAlerts.some((a) => a.reminderLabel === '提前 2 小時'));
+
+  // All-day task (empty startTime) with 1-day-before defaults to 09:00
+  const allDayTask = makeTask({
+    id: 'allday-1',
+    dueDate: '2026-11-15',
+    startTime: '',
+    reminderMinutes: 1440,
+  });
+  const allDayAlerts = findDueReminders(
+    [allDayTask],
+    new Date('2026-11-14T09:01:00').getTime(),
+    {},
+    new Set()
+  );
+  assert.equal(allDayAlerts.length, 1);
+  assert.equal(allDayAlerts[0].taskId, 'allday-1');
+});
+
+test('quickLinks validates, normalizes URLs safely, and builds quick link items', () => {
+  const autoHttps = validateAndNormalizeQuickLink('公司 EIP', 'eip.company.com/portal');
+  assert.equal(autoHttps.ok, true);
+  if (autoHttps.ok) {
+    assert.equal(autoHttps.name, '公司 EIP');
+    assert.equal(autoHttps.url, 'https://eip.company.com/portal');
+  }
+
+  const intranet = validateAndNormalizeQuickLink('內部合約系統', 'http://contract-sys:8080/login');
+  assert.equal(intranet.ok, true);
+  if (intranet.ok) {
+    assert.equal(intranet.url, 'http://contract-sys:8080/login');
+  }
+
+  assert.equal(validateAndNormalizeQuickLink('  ', 'https://eip.com').ok, false);
+  assert.equal(validateAndNormalizeQuickLink('a'.repeat(41), 'https://eip.com').ok, false);
+  assert.equal(validateAndNormalizeQuickLink('EIP', '   ').ok, false);
+  assert.equal(validateAndNormalizeQuickLink('壞連結', 'javascript:alert(1)').ok, false);
+  assert.equal(validateAndNormalizeQuickLink('壞連結', 'data:text/html,hi').ok, false);
+  assert.equal(validateAndNormalizeQuickLink('壞連結', 'vbscript:msgbox').ok, false);
+
+  const built = buildQuickLinkItem('公司 EIP', 'https://eip.company.com/', 9999, 'pending');
+  assert.match(built.id, /^link-9999-/);
+  assert.equal(built.name, '公司 EIP');
+  assert.equal(built.url, 'https://eip.company.com/');
+  assert.equal(built.version, 1);
+  assert.equal(built.syncStatus, 'pending');
+  assert.equal(built.createdAt, 9999);
+  assert.equal(built.updatedAt, 9999);
+});
+
+test('mergeSyncedCollection resolves minor clock skew via numeric version when local is not pending', () => {
+  const localSynced = makeTask({
+    id: 'skew-1',
+    title: '舊版本標題',
+    version: 2,
+    updatedAt: 50000,
+    syncStatus: 'synced',
+  });
+  const remoteNewerVersion = makeTask({
+    id: 'skew-1',
+    title: '另一台剛修改但時鐘慢 5 秒的標題',
+    version: 3,
+    updatedAt: 45000,
+    syncStatus: 'synced',
+  });
+  const merged = mergeSyncedCollection([localSynced], [remoteNewerVersion]);
+  assert.equal(merged[0].title, '另一台剛修改但時鐘慢 5 秒的標題');
+  assert.equal(merged[0].syncStatus, 'synced');
+
+  const localPending = makeTask({
+    id: 'skew-2',
+    title: '本機待上傳修改',
+    version: 2,
+    updatedAt: 50000,
+    syncStatus: 'pending',
+  });
+  const remoteOlderTimeHigherVer = makeTask({
+    id: 'skew-2',
+    title: '遠端版本',
+    version: 5,
+    updatedAt: 45000,
+    syncStatus: 'synced',
+  });
+  const mergedPending = mergeSyncedCollection([localPending], [remoteOlderTimeHigherVer]);
+  assert.equal(mergedPending[0].title, '本機待上傳修改');
+  assert.equal(mergedPending[0].syncStatus, 'pending');
+});
+
 

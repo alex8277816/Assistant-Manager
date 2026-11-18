@@ -76,7 +76,7 @@
         },
         "kind": {
           "type": "string",
-          "enum": ["task", "memo", "plugin", "card"],
+          "enum": ["task", "memo", "plugin", "card", "link"],
           "description": "Record type for client synchronization routing."
         },
         "ciphertext": {

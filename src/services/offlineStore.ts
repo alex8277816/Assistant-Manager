@@ -3,6 +3,7 @@ import type {
   GovSettings,
   GovSyncCache,
   MemoItem,
+  QuickLinkItem,
   TaskItem,
   ThemeSettings,
   VaultState,
@@ -29,6 +30,7 @@ export interface PersistedWorkspace {
   memos: MemoItem[];
   plugins: WorkflowPlugin[];
   businessCards?: BusinessCardItem[];
+  quickLinks?: QuickLinkItem[];
   theme: ThemeSettings;
   voice: VoiceSettings;
   vault: VaultState;
@@ -302,6 +304,7 @@ export function createSeedWorkspace(): PersistedWorkspace {
     memos,
     plugins,
     businessCards,
+    quickLinks: [],
     theme: { mode: 'light', accent: 'teal' },
     voice: {
       enabled: true,
@@ -394,5 +397,56 @@ export async function saveWorkspaceToOffline(workspace: PersistedWorkspace): Pro
     } catch {
       // ignore
     }
+  }
+}
+
+export async function saveSessionCryptoKey(uid: string, key: CryptoKey): Promise<void> {
+  try {
+    const db = await openDB();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_KV, 'readwrite');
+      const store = tx.objectStore(STORE_KV);
+      const req = store.put({ uid, key, savedAt: Date.now() }, 'session-crypto-key');
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  } catch {
+    // Ignore if structured clone of CryptoKey is unsupported
+  }
+}
+
+export async function loadSessionCryptoKey(uid: string): Promise<CryptoKey | null> {
+  try {
+    const db = await openDB();
+    const record = await new Promise<{ uid?: string; key?: CryptoKey } | undefined>(
+      (resolve, reject) => {
+        const tx = db.transaction(STORE_KV, 'readonly');
+        const store = tx.objectStore(STORE_KV);
+        const req = store.get('session-crypto-key');
+        req.onsuccess = () => resolve(req.result as { uid?: string; key?: CryptoKey } | undefined);
+        req.onerror = () => reject(req.error);
+      }
+    );
+    if (record && record.uid === uid && record.key) {
+      return record.key;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export async function clearSessionCryptoKey(): Promise<void> {
+  try {
+    const db = await openDB();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_KV, 'readwrite');
+      const store = tx.objectStore(STORE_KV);
+      const req = store.delete('session-crypto-key');
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  } catch {
+    // ignore
   }
 }

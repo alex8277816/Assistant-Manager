@@ -37,6 +37,7 @@ export const ReminderBanner: React.FC<ReminderBannerProps> = ({
           <div>
             <p className="text-xs font-medium text-amber-800 dark:text-amber-300">
               {active.isMeeting ? '即將開始會議提醒' : '任務期限自動提醒'}
+              {active.reminderLabel ? ` · ${active.reminderLabel}` : ''}
               {alerts.length > 1 ? ` · 另有 ${alerts.length - 1} 項提醒` : ''}
             </p>
             <p className="text-sm font-semibold mt-0.5">{active.title}</p>

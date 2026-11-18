@@ -29,5 +29,5 @@ test('firestore.rules enforces authenticated owner UID, isValidId, hasOnly, and 
   assert.match(rules, /incoming\(\)\.createdAt == request\.time/);
   assert.match(rules, /incoming\(\)\.updatedAt == request\.time/);
   assert.match(rules, /resource\.data\.ownerId == request\.auth\.uid/);
-  assert.match(rules, /data\.kind in \['task', 'memo', 'plugin', 'card'\]/);
+  assert.match(rules, /data\.kind in \['task', 'memo', 'plugin', 'card', 'link'\]/);
 });

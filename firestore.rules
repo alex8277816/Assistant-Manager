@@ -64,7 +64,7 @@ service cloud.firestore {
         && isValidId(data.ownerId)
         && data.ownerId == userId
         && data.ownerId == request.auth.uid
-        && data.kind in ['task', 'memo', 'plugin', 'card']
+        && data.kind in ['task', 'memo', 'plugin', 'card', 'link']
         && data.ciphertext is string && data.ciphertext.size() >= 16 && data.ciphertext.size() <= 200000
         && data.iv is string && data.iv.size() >= 8 && data.iv.size() <= 64
         && data.version is int && data.version >= 1 && data.version <= 1000000

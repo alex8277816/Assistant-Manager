@@ -25,6 +25,7 @@ import {
   sortTasks,
 } from '../utils/smartEngine';
 import { getUpcomingHolidays } from '../utils/govCalendar';
+import { formatTaskReminderSummary } from '../utils/reminderEngine';
 import { isSpeechRecognitionSupported, startVoiceDictation } from '../services/voiceService';
 import { TodayAnalyticsCard } from './TodayAnalyticsCard';
 
@@ -556,16 +557,16 @@ export const TodayScheduleView: React.FC<TodayScheduleViewProps> = ({
                           )}
                           <span aria-hidden="true">·</span>
                           <span>{task.tags.join(' / ')}</span>
-                          {task.reminderMinutes >= 0 && !task.completed && (
-                            <>
-                              <span aria-hidden="true">·</span>
-                              <span>
-                                {task.reminderMinutes === 0
-                                  ? '準時提醒'
-                                  : `提前 ${task.reminderMinutes} 分提醒`}
-                              </span>
-                            </>
-                          )}
+                          {(() => {
+                            const summary = !task.completed ? formatTaskReminderSummary(task) : null;
+                            if (!summary) return null;
+                            return (
+                              <>
+                                <span aria-hidden="true">·</span>
+                                <span>{summary}</span>
+                              </>
+                            );
+                          })()}
                         </div>
                       </div>
 
@@ -620,9 +621,7 @@ export const TodayScheduleView: React.FC<TodayScheduleViewProps> = ({
               </p>
               <p className="text-xs font-mono text-stone-500 dark:text-zinc-400 tabular-nums">
                 {nextUpcomingTask.dueDate} {nextUpcomingTask.startTime} ·{' '}
-                {nextUpcomingTask.reminderMinutes >= 0
-                  ? `提前 ${nextUpcomingTask.reminderMinutes} 分鐘自動提醒`
-                  : '未啟用自動提醒'}
+                {formatTaskReminderSummary(nextUpcomingTask) || '未啟用自動提醒'}
               </p>
               <div className="pt-2 flex items-center gap-2">
                 <button

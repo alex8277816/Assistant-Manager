@@ -33,6 +33,7 @@ import type {
   BusinessCardItem,
   CloudBackupRecord,
   MemoItem,
+  QuickLinkItem,
   TaskItem,
   ThemeAccent,
   ThemeMode,
@@ -424,8 +425,8 @@ export interface PushItemOptions {
 export async function pushEncryptedSyncItem(
   uid: string,
   key: CryptoKey,
-  kind: 'task' | 'memo' | 'plugin' | 'card',
-  item: TaskItem | MemoItem | WorkflowPlugin | BusinessCardItem,
+  kind: 'task' | 'memo' | 'plugin' | 'card' | 'link',
+  item: TaskItem | MemoItem | WorkflowPlugin | BusinessCardItem | QuickLinkItem,
   options?: PushItemOptions
 ): Promise<void> {
   const safeId = item.id.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -509,6 +510,7 @@ export interface DecryptedRemoteBatch {
   memos: MemoItem[];
   plugins: WorkflowPlugin[];
   cards: BusinessCardItem[];
+  links: QuickLinkItem[];
 }
 
 export interface SyncBatchDiagnostics {
@@ -526,6 +528,7 @@ async function decryptSnapshotDocs(
   const memos: MemoItem[] = [];
   const plugins: WorkflowPlugin[] = [];
   const cards: BusinessCardItem[] = [];
+  const links: QuickLinkItem[] = [];
   let decryptedCount = 0;
   let skippedDecryptCount = 0;
 
@@ -555,6 +558,9 @@ async function decryptSnapshotDocs(
       } else if (d.kind === 'card') {
         cards.push({ ...parsed, syncStatus: 'synced' });
         decryptedCount += 1;
+      } else if (d.kind === 'link') {
+        links.push({ ...parsed, syncStatus: 'synced' });
+        decryptedCount += 1;
       }
     } catch {
       skippedDecryptCount += 1;
@@ -562,7 +568,7 @@ async function decryptSnapshotDocs(
   }
 
   return {
-    batch: { tasks, memos, plugins, cards },
+    batch: { tasks, memos, plugins, cards, links },
     diagnostics: {
       remoteTotalDocs: docs.length,
       decryptedCount,

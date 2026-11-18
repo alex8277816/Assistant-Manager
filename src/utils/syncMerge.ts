@@ -3,6 +3,7 @@ export const SEED_BASE_TIMESTAMP = Date.UTC(2026, 0, 1, 8, 0, 0);
 export interface SyncableRecord {
   id: string;
   updatedAt: number;
+  version?: number | string;
   syncStatus?: 'local' | 'pending' | 'synced';
 }
 
@@ -13,6 +14,8 @@ export function isSeedRecordId(id: string): boolean {
 /**
  * Deterministic Last-Write-Wins merge for local + remote collections.
  * - Remote items with updatedAt >= local.updatedAt overwrite local and become 'synced'.
+ * - If local is not 'pending' and both carry numeric versions with remote.version > local.version,
+ *   accept the remote update even under minor cross-device clock skew.
  * - Local items missing remotely or strictly newer than remote stay intact.
  */
 export function mergeSyncedCollection<T extends SyncableRecord>(
@@ -25,7 +28,15 @@ export function mergeSyncedCollection<T extends SyncableRecord>(
   }
   for (const remote of remoteItems) {
     const local = map.get(remote.id);
-    if (!local || remote.updatedAt >= local.updatedAt) {
+    const hasNewerTimestamp = Boolean(local && remote.updatedAt >= local.updatedAt);
+    const hasHigherVersion = Boolean(
+      local &&
+        local.syncStatus !== 'pending' &&
+        typeof remote.version === 'number' &&
+        typeof local.version === 'number' &&
+        remote.version > local.version
+    );
+    if (!local || hasNewerTimestamp || hasHigherVersion) {
       map.set(remote.id, { ...remote, syncStatus: 'synced' });
     }
   }

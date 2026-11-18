@@ -10,11 +10,14 @@ import {
 import {
   collection,
   deleteDoc,
+  disableNetwork,
   doc,
+  enableNetwork,
   getDoc,
   getDocFromServer,
   getDocs,
   getFirestore,
+  initializeFirestore,
   onSnapshot,
   orderBy,
   query,
@@ -22,6 +25,7 @@ import {
   setDoc,
   updateDoc,
   where,
+  type FirestoreSettings,
   type Unsubscribe,
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
@@ -45,8 +49,54 @@ import {
 
 const app = initializeApp(firebaseConfig);
 const databaseId = (firebaseConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId;
-export const db = databaseId ? getFirestore(app, databaseId) : getFirestore(app);
+
+function createFirestoreDb() {
+  try {
+    const settings: FirestoreSettings = {
+      experimentalAutoDetectLongPolling: true,
+    };
+    return initializeFirestore(app, settings, databaseId);
+  } catch {
+    return databaseId ? getFirestore(app, databaseId) : getFirestore(app);
+  }
+}
+
+export const db = createFirestoreDb();
 export const auth = getAuth(app);
+
+const confirmedRemotePaths = new Set<string>();
+const itemWriteQueue = new Map<string, Promise<void>>();
+
+export function clearSyncRuntimeCaches(): void {
+  confirmedRemotePaths.clear();
+  itemWriteQueue.clear();
+}
+
+function enqueueItemWrite(path: string, work: () => Promise<void>): Promise<void> {
+  const prev = itemWriteQueue.get(path) ?? Promise.resolve();
+  const next = prev.catch(() => {}).then(work);
+  itemWriteQueue.set(path, next);
+  return next.finally(() => {
+    if (itemWriteQueue.get(path) === next) {
+      itemWriteQueue.delete(path);
+    }
+  });
+}
+
+function isNavigatorOffline(): boolean {
+  return typeof navigator !== 'undefined' && navigator.onLine === false;
+}
+
+export async function ensureFirestoreOnline(cycle = false): Promise<void> {
+  try {
+    if (cycle) {
+      await disableNetwork(db);
+    }
+    await enableNetwork(db);
+  } catch {
+    // Ignore transient network toggle errors
+  }
+}
 
 export enum OperationType {
   CREATE = 'create',
@@ -169,7 +219,7 @@ export async function connectWithSyncSerial(
         creds.authEmail,
         creds.authPassword
       );
-      saveSyncIdentityHint({ mode: 'serial', label });
+      saveSyncIdentityHint({ mode: 'serial', label, serial: creds.formattedSerial });
       return { user: created.user, formattedSerial: creds.formattedSerial, isNewSpace: true };
     } catch (err) {
       throw new Error(formatAuthErrorMessage(err));
@@ -178,7 +228,7 @@ export async function connectWithSyncSerial(
 
   try {
     const signed = await signInWithEmailAndPassword(auth, creds.authEmail, creds.authPassword);
-    saveSyncIdentityHint({ mode: 'serial', label });
+    saveSyncIdentityHint({ mode: 'serial', label, serial: creds.formattedSerial });
     return { user: signed.user, formattedSerial: creds.formattedSerial, isNewSpace: false };
   } catch (err) {
     const code =
@@ -195,7 +245,7 @@ export async function connectWithSyncSerial(
           creds.authEmail,
           creds.authPassword
         );
-        saveSyncIdentityHint({ mode: 'serial', label });
+        saveSyncIdentityHint({ mode: 'serial', label, serial: creds.formattedSerial });
         return { user: created.user, formattedSerial: creds.formattedSerial, isNewSpace: true };
       } catch (createErr) {
         const createCode =
@@ -214,6 +264,7 @@ export async function connectWithSyncSerial(
 
 export async function signOutSyncSession(): Promise<void> {
   saveSyncIdentityHint(null);
+  clearSyncRuntimeCaches();
   await signOut(auth);
 }
 
@@ -228,8 +279,12 @@ export interface RemoteVaultMeta {
 export async function fetchUserVaultMeta(uid: string): Promise<RemoteVaultMeta | null> {
   const path = `users/${uid}`;
   try {
+    if (isNavigatorOffline()) {
+      throw new Error('Failed to get document because the client is offline.');
+    }
     const snap = await getDoc(doc(db, 'users', uid));
     if (!snap.exists()) return null;
+    confirmedRemotePaths.add(path);
     const d = snap.data();
     return {
       vaultSalt: d.vaultSalt,
@@ -247,10 +302,12 @@ export function subscribeUserVaultMeta(
   uid: string,
   onMeta: (meta: RemoteVaultMeta) => void
 ): Unsubscribe {
+  const path = `users/${uid}`;
   return onSnapshot(
     doc(db, 'users', uid),
     (snap) => {
       if (!snap.exists()) return;
+      confirmedRemotePaths.add(path);
       const d = snap.data();
       onMeta({
         vaultSalt: d.vaultSalt,
@@ -266,33 +323,72 @@ export function subscribeUserVaultMeta(
   );
 }
 
+function getFirebaseErrorCode(error: unknown): string {
+  return typeof error === 'object' && error !== null && 'code' in error
+    ? String((error as { code: unknown }).code)
+    : '';
+}
+
 export async function upsertUserVaultMeta(
   uid: string,
-  meta: RemoteVaultMeta
+  meta: RemoteVaultMeta,
+  knownRemoteMetaExists?: boolean
 ): Promise<void> {
   const path = `users/${uid}`;
   const ref = doc(db, 'users', uid);
+
+  const doCreate = () =>
+    setDoc(ref, {
+      ownerId: uid,
+      vaultSalt: meta.vaultSalt,
+      vaultCheckCipher: meta.vaultCheckCipher,
+      vaultCheckIv: meta.vaultCheckIv,
+      themeMode: meta.themeMode,
+      themeAccent: meta.themeAccent,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+
+  const doUpdate = () =>
+    updateDoc(ref, {
+      vaultSalt: meta.vaultSalt,
+      vaultCheckCipher: meta.vaultCheckCipher,
+      vaultCheckIv: meta.vaultCheckIv,
+      updatedAt: serverTimestamp(),
+    });
+
   try {
-    const existing = await getDoc(ref);
-    if (!existing.exists()) {
-      await setDoc(ref, {
-        ownerId: uid,
-        vaultSalt: meta.vaultSalt,
-        vaultCheckCipher: meta.vaultCheckCipher,
-        vaultCheckIv: meta.vaultCheckIv,
-        themeMode: meta.themeMode,
-        themeAccent: meta.themeAccent,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    } else {
-      await updateDoc(ref, {
-        vaultSalt: meta.vaultSalt,
-        vaultCheckCipher: meta.vaultCheckCipher,
-        vaultCheckIv: meta.vaultCheckIv,
-        updatedAt: serverTimestamp(),
-      });
+    if (isNavigatorOffline()) {
+      throw new Error('client is offline');
     }
+
+    if (knownRemoteMetaExists || confirmedRemotePaths.has(path)) {
+      try {
+        await doUpdate();
+      } catch (err) {
+        if (getFirebaseErrorCode(err) === 'not-found') {
+          await doCreate();
+        } else {
+          throw err;
+        }
+      }
+    } else {
+      try {
+        await doCreate();
+      } catch (err) {
+        if (getFirebaseErrorCode(err) === 'permission-denied') {
+          const existing = await getDoc(ref);
+          if (existing.exists()) {
+            await doUpdate();
+          } else {
+            throw err;
+          }
+        } else {
+          throw err;
+        }
+      }
+    }
+    confirmedRemotePaths.add(path);
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
@@ -305,62 +401,107 @@ export async function updateRemoteThemePrefs(
 ): Promise<void> {
   const path = `users/${uid}`;
   try {
+    if (isNavigatorOffline()) return;
     const ref = doc(db, 'users', uid);
-    const snap = await getDoc(ref);
-    if (!snap.exists()) return;
     await updateDoc(ref, {
       themeMode,
       themeAccent,
       updatedAt: serverTimestamp(),
     });
   } catch (error) {
+    if (getFirebaseErrorCode(error) === 'not-found') {
+      return;
+    }
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
+}
+
+export interface PushItemOptions {
+  knownRemoteExists?: boolean;
+  knownRemoteVersion?: number;
 }
 
 export async function pushEncryptedSyncItem(
   uid: string,
   key: CryptoKey,
   kind: 'task' | 'memo' | 'plugin' | 'card',
-  item: TaskItem | MemoItem | WorkflowPlugin | BusinessCardItem
+  item: TaskItem | MemoItem | WorkflowPlugin | BusinessCardItem,
+  options?: PushItemOptions
 ): Promise<void> {
   const safeId = item.id.replace(/[^a-zA-Z0-9_-]/g, '_');
   const path = `users/${uid}/items/${safeId}`;
   const ref = doc(db, 'users', uid, 'items', safeId);
 
-  try {
-    const { ciphertext, iv } = await encryptText(key, JSON.stringify(item));
-    const existing = await getDoc(ref);
-    const version =
-      'version' in item && typeof item.version === 'number' ? Math.max(1, item.version) : 1;
-    const deleted = 'deleted' in item ? Boolean(item.deleted) : false;
+  return enqueueItemWrite(path, async () => {
+    try {
+      if (isNavigatorOffline()) {
+        throw new Error('client is offline');
+      }
 
-    if (!existing.exists()) {
-      await setDoc(ref, {
-        ownerId: uid,
-        kind,
-        ciphertext,
-        iv,
-        version,
-        deleted,
-        clientUpdatedAt: item.updatedAt,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    } else {
-      const prevVersion = Number(existing.data().version || 1);
-      await updateDoc(ref, {
-        ciphertext,
-        iv,
-        version: Math.max(version, prevVersion),
-        deleted,
-        clientUpdatedAt: item.updatedAt,
-        updatedAt: serverTimestamp(),
-      });
+      const { ciphertext, iv } = await encryptText(key, JSON.stringify(item));
+      const version =
+        'version' in item && typeof item.version === 'number' ? Math.max(1, item.version) : 1;
+      const minVersion = Math.max(version, options?.knownRemoteVersion ?? 1);
+      const deleted = 'deleted' in item ? Boolean(item.deleted) : false;
+
+      const doCreate = () =>
+        setDoc(ref, {
+          ownerId: uid,
+          kind,
+          ciphertext,
+          iv,
+          version: minVersion,
+          deleted,
+          clientUpdatedAt: item.updatedAt,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+
+      const doUpdate = (targetVersion: number) =>
+        updateDoc(ref, {
+          ciphertext,
+          iv,
+          version: targetVersion,
+          deleted,
+          clientUpdatedAt: item.updatedAt,
+          updatedAt: serverTimestamp(),
+        });
+
+      const alreadyRemote = Boolean(options?.knownRemoteExists || confirmedRemotePaths.has(path));
+
+      if (alreadyRemote) {
+        try {
+          await doUpdate(minVersion);
+        } catch (err) {
+          if (getFirebaseErrorCode(err) === 'not-found') {
+            await doCreate();
+          } else {
+            throw err;
+          }
+        }
+        confirmedRemotePaths.add(path);
+        return;
+      }
+
+      try {
+        await doCreate();
+        confirmedRemotePaths.add(path);
+      } catch (err) {
+        if (getFirebaseErrorCode(err) === 'permission-denied') {
+          const existing = await getDoc(ref);
+          if (existing.exists()) {
+            const prevVersion = Number(existing.data().version || 1);
+            await doUpdate(Math.max(minVersion, prevVersion));
+            confirmedRemotePaths.add(path);
+            return;
+          }
+        }
+        throw err;
+      }
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, path);
     }
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
-  }
+  });
 }
 
 export interface DecryptedRemoteBatch {
@@ -377,7 +518,8 @@ export interface SyncBatchDiagnostics {
 }
 
 async function decryptSnapshotDocs(
-  docs: Array<{ data: () => Record<string, unknown> }>,
+  uid: string,
+  docs: Array<{ id: string; data: () => Record<string, unknown> }>,
   key: CryptoKey
 ): Promise<{ batch: DecryptedRemoteBatch; diagnostics: SyncBatchDiagnostics }> {
   const tasks: TaskItem[] = [];
@@ -388,6 +530,7 @@ async function decryptSnapshotDocs(
   let skippedDecryptCount = 0;
 
   for (const docSnap of docs) {
+    confirmedRemotePaths.add(`users/${uid}/items/${docSnap.id}`);
     const d = docSnap.data() as {
       kind?: string;
       ciphertext?: string;
@@ -434,9 +577,12 @@ export async function fetchRemoteEncryptedItems(
 ): Promise<{ batch: DecryptedRemoteBatch; diagnostics: SyncBatchDiagnostics }> {
   const path = `users/${uid}/items`;
   try {
+    if (isNavigatorOffline()) {
+      throw new Error('Failed to get document because the client is offline.');
+    }
     const q = query(collection(db, 'users', uid, 'items'), where('ownerId', '==', uid));
     const snapshot = await getDocs(q);
-    return await decryptSnapshotDocs(snapshot.docs, key);
+    return await decryptSnapshotDocs(uid, snapshot.docs, key);
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, path);
   }
@@ -454,7 +600,7 @@ export function subscribeEncryptedSyncItems(
   return onSnapshot(
     q,
     async (snapshot) => {
-      const { batch, diagnostics } = await decryptSnapshotDocs(snapshot.docs, key);
+      const { batch, diagnostics } = await decryptSnapshotDocs(uid, snapshot.docs, key);
       onBatch(batch, diagnostics);
     },
     (error) => {

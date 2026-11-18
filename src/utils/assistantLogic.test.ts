@@ -38,8 +38,10 @@ import {
 import {
   deriveSerialAuthCredentials,
   formatAuthErrorMessage,
+  formatFirestoreSyncError,
   generateSyncSerial,
   isEmailProviderDisabledError,
+  isOfflineSyncError,
   maskSyncSerial,
   normalizeAccountIdentifier,
   normalizeSyncSerial,
@@ -422,6 +424,14 @@ test('syncAuth normalizes custom accounts, generates & derives deterministic ser
   assert.notEqual(cred1.authPassword, credDiffPwd.authPassword);
 
   assert.equal(resolveSyncIdentityLabel(custom.authEmail, null), 'alex_2026');
+  assert.equal(
+    resolveSyncIdentityLabel(cred1.authEmail, {
+      mode: 'serial',
+      label: maskSyncSerial(serial),
+      serial,
+    }),
+    maskSyncSerial(serial)
+  );
   const opNotAllowedMsg = formatAuthErrorMessage({ code: 'auth/operation-not-allowed' });
   assert.match(opNotAllowedMsg, /Email\/Password/);
   assert.equal(isEmailProviderDisabledError({ code: 'auth/operation-not-allowed' }), true);
@@ -500,3 +510,20 @@ test('pairingLink encodes and parses #pair= hash fragments safely without query 
   assert.equal(parseSerialPairingHash('#pair=invalid_base64'), null);
   assert.equal(parseSerialPairingHash(''), null);
 });
+
+test('isOfflineSyncError and formatFirestoreSyncError detect offline getDoc errors cleanly', () => {
+  const rawOfflineErr = new Error(
+    JSON.stringify({
+      error: 'Failed to get document because the client is offline.',
+      operationType: 'write',
+      path: 'users/uid/items/task-1',
+    })
+  );
+  assert.equal(isOfflineSyncError(rawOfflineErr), true);
+  assert.match(formatFirestoreSyncError(rawOfflineErr), /離線|暫存於本機/);
+
+  const otherErr = new Error('Missing or insufficient permissions.');
+  assert.equal(isOfflineSyncError(otherErr), false);
+  assert.equal(formatFirestoreSyncError(otherErr), 'Missing or insufficient permissions.');
+});
+

@@ -119,7 +119,7 @@ service cloud.firestore {
       // Encrypted Sync Items (tasks, memos, plugins, business cards)
       match /items/{itemId} {
         allow get: if isValidId(userId) && isValidId(itemId) && isOwner(userId)
-          && existing().ownerId == request.auth.uid;
+          && (resource == null || existing().ownerId == request.auth.uid);
         allow list: if isValidId(userId) && isOwner(userId)
           && resource.data.ownerId == request.auth.uid;
         allow create: if isValidId(userId) && isValidId(itemId)
@@ -149,7 +149,7 @@ service cloud.firestore {
       // Encrypted Cloud Backup Snapshots
       match /backups/{backupId} {
         allow get: if isValidId(userId) && isValidId(backupId) && isOwner(userId)
-          && existing().ownerId == request.auth.uid;
+          && (resource == null || existing().ownerId == request.auth.uid);
         allow list: if isValidId(userId) && isOwner(userId)
           && resource.data.ownerId == request.auth.uid;
         allow create: if isValidId(userId) && isValidId(backupId)

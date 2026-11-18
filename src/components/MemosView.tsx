@@ -6,6 +6,7 @@ import { inferSmartTags } from '../utils/smartEngine';
 interface MemosViewProps {
   memos: MemoItem[];
   vaultUnlocked: boolean;
+  cloudConnected?: boolean;
   onSaveMemo: (
     draft: Omit<MemoItem, 'id' | 'version' | 'syncStatus' | 'createdAt' | 'updatedAt'>,
     existingId?: string
@@ -17,6 +18,7 @@ interface MemosViewProps {
 export const MemosView: React.FC<MemosViewProps> = ({
   memos,
   vaultUnlocked,
+  cloudConnected = false,
   onSaveMemo,
   onDeleteMemo,
   onSpeakMemo,
@@ -228,9 +230,13 @@ export const MemosView: React.FC<MemosViewProps> = ({
           <div className="flex items-center gap-2 text-xs text-stone-500 dark:text-zinc-400">
             <Lock className="w-3.5 h-3.5 accent-text" />
             <span>
-              {vaultUnlocked
-                ? 'AES-256-GCM 端對端金鑰已解鎖 · 雲端同步全程加密'
-                : '本機離線安全儲存（設定金鑰即可同步端對端加密雲端）'}
+              {cloudConnected && vaultUnlocked
+                ? 'AES-256-GCM 端對端金鑰已解鎖 · 跨裝置雲端同步啟用中'
+                : cloudConnected && !vaultUnlocked
+                  ? '已連線雲端空間 · 請至「備份與主題」輸入密碼解鎖金鑰以同步更新'
+                  : vaultUnlocked
+                    ? '本機端對端金鑰已解鎖（尚未連線雲端帳號或同步序號）'
+                    : '本機離線安全儲存（連線同步空間並設定金鑰即可跨平台同步）'}
             </span>
           </div>
 

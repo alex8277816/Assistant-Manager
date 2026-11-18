@@ -23,6 +23,7 @@ import {
 interface BusinessCardsViewProps {
   cards: BusinessCardItem[];
   vaultUnlocked: boolean;
+  cloudConnected?: boolean;
   isSpeaking: boolean;
   onSaveCard: (draft: BusinessCardDraft, existingId?: string) => void;
   onDeleteCard: (id: string) => void;
@@ -39,6 +40,7 @@ const CATEGORY_LABEL: Record<BusinessCardCategory, string> = {
 export const BusinessCardsView: React.FC<BusinessCardsViewProps> = ({
   cards,
   vaultUnlocked,
+  cloudConnected = false,
   isSpeaking,
   onSaveCard,
   onDeleteCard,
@@ -202,9 +204,13 @@ export const BusinessCardsView: React.FC<BusinessCardsViewProps> = ({
             </h1>
             <p className="text-sm text-stone-600 dark:text-zinc-400 mt-0.5 tabular-nums">
               共 {activeCards.length} 張名片 ·{' '}
-              {vaultUnlocked
-                ? '端對端加密保護中，可跨裝置雲端同步'
-                : '本機離線安全儲存中'}
+              {cloudConnected && vaultUnlocked
+                ? '端對端加密保護中，已連線跨裝置即時雲端同步'
+                : cloudConnected && !vaultUnlocked
+                  ? '已連線雲端空間，請至「備份與主題」輸入密碼解鎖金鑰以同步更新'
+                  : vaultUnlocked
+                    ? '本機金鑰加密中（尚未連線雲端同步帳號或序號）'
+                    : '本機離線安全儲存中'}
             </p>
           </div>
 

@@ -36,9 +36,11 @@ import {
   saveWorkspaceToOffline,
 } from './services/offlineStore';
 import {
+  clearSyncRuntimeCaches,
   connectWithSyncSerial,
   createCloudBackupSnapshot,
   deleteCloudBackupSnapshot,
+  ensureFirestoreOnline,
   fetchRemoteEncryptedItems,
   fetchUserVaultMeta,
   listCloudBackupSnapshots,
@@ -49,6 +51,7 @@ import {
   subscribeAuth,
   subscribeEncryptedSyncItems,
   subscribeUserVaultMeta,
+  testFirestoreConnection,
   updateRemoteThemePrefs,
   upsertUserVaultMeta,
   type SyncBatchDiagnostics,
@@ -78,6 +81,8 @@ import { parseQuickTaskInput } from './utils/smartEngine';
 import { findItemsNeedingPush, mergeSyncedCollection } from './utils/syncMerge';
 import { buildNewBusinessCard, type BusinessCardDraft } from './utils/cardHelpers';
 import {
+  formatFirestoreSyncError,
+  isOfflineSyncError,
   loadSyncIdentityHint,
   resolveSyncIdentityLabel,
   type SyncIdentityHint,
@@ -171,10 +176,18 @@ export default function App() {
   const [syncIdentityHint, setSyncIdentityHint] = useState<SyncIdentityHint | null>(() =>
     loadSyncIdentityHint()
   );
-  const [activeSyncSerial, setActiveSyncSerial] = useState<string | null>(null);
+  const [activeSyncSerial, setActiveSyncSerial] = useState<string | null>(
+    () => loadSyncIdentityHint()?.serial ?? null
+  );
   const [pairedPrefill, setPairedPrefill] = useState<ParsedPairingLink | null>(null);
   const autoPairAttemptedRef = useRef(false);
   const remoteSyncedOnceRef = useRef(false);
+  const remoteMetaExistsRef = useRef(false);
+  const inFlightFlushRef = useRef<Promise<number> | null>(null);
+  const vaultRef = useRef(vault);
+  vaultRef.current = vault;
+  const themeRef = useRef(theme);
+  themeRef.current = theme;
   const [syncDiagnostics, setSyncDiagnostics] = useState<
     SyncBatchDiagnostics & { lastError: string | null }
   >({
@@ -264,6 +277,16 @@ export default function App() {
     };
     consumePairingHash();
     window.addEventListener('hashchange', consumePairingHash);
+    testFirestoreConnection()
+      .then((ok) => {
+        if (!ok) {
+          setSyncDiagnostics((prev) => ({
+            ...prev,
+            lastError: 'Firestore 連線異常，請確認網路連線或 Firebase 專案設定。',
+          }));
+        }
+      })
+      .catch(() => {});
     const unsubSpeak = subscribeSpeakingState((s) => setIsSpeaking(s.isSpeaking));
 
     // Same-device cross-tab / installed PWA window sync via BroadcastChannel
@@ -356,6 +379,7 @@ export default function App() {
         try {
           const remoteMeta = await fetchUserVaultMeta(nextUser.uid);
           if (remoteMeta) {
+            remoteMetaExistsRef.current = true;
             setVault((prev) => ({
               ...prev,
               initialized: true,
@@ -377,6 +401,7 @@ export default function App() {
           // Offline or unverified; stay gracefully in local-first mode
         }
       } else {
+        remoteMetaExistsRef.current = false;
         setCloudBackups([]);
       }
     });
@@ -387,6 +412,7 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
     return subscribeUserVaultMeta(user.uid, (remoteMeta) => {
+      remoteMetaExistsRef.current = true;
       setVault((prev) => ({
         ...prev,
         initialized: true,
@@ -414,83 +440,191 @@ export default function App() {
         plugins?: WorkflowPlugin[];
         cards?: BusinessCardItem[];
       }
-    ) => {
-      let current = latestCollectionsRef.current;
+    ): Promise<number> => {
+      if (inFlightFlushRef.current && !overrideSnapshot) {
+        return inFlightFlushRef.current;
+      }
 
-      if (!remoteSyncedOnceRef.current) {
+      const runFlush = async (): Promise<number> => {
+        if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+          return 0;
+        }
+
+        const currentVault = vaultRef.current;
+        const currentTheme = themeRef.current;
+        if (
+          !remoteMetaExistsRef.current &&
+          currentVault.initialized &&
+          currentVault.salt &&
+          currentVault.checkCipher &&
+          currentVault.checkIv
+        ) {
+          try {
+            await upsertUserVaultMeta(
+              targetUser.uid,
+              {
+                vaultSalt: currentVault.salt,
+                vaultCheckCipher: currentVault.checkCipher,
+                vaultCheckIv: currentVault.checkIv,
+                themeMode: currentTheme.mode,
+                themeAccent: currentTheme.accent,
+              },
+              false
+            );
+            remoteMetaExistsRef.current = true;
+          } catch (err) {
+            setSyncDiagnostics((prev) => ({
+              ...prev,
+              lastError: formatFirestoreSyncError(err, '雲端初始化寫入失敗'),
+            }));
+            throw err;
+          }
+        }
+
+        let current = latestCollectionsRef.current;
+
+        if (!remoteSyncedOnceRef.current) {
+          try {
+            const { batch, diagnostics } = await fetchRemoteEncryptedItems(targetUser.uid, targetKey);
+            remoteSnapshotRef.current = batch;
+            remoteSyncedOnceRef.current = true;
+            setSyncDiagnostics({ ...diagnostics, lastError: null });
+
+            const mergedTasks = mergeSyncedCollection(overrideSnapshot?.tasks ?? current.tasks, batch.tasks);
+            const mergedMemos = mergeSyncedCollection(overrideSnapshot?.memos ?? current.memos, batch.memos);
+            const mergedPlugins = mergeSyncedCollection(overrideSnapshot?.plugins ?? current.plugins, batch.plugins);
+            const mergedCards = mergeSyncedCollection(overrideSnapshot?.cards ?? current.businessCards, batch.cards);
+            setTasks(mergedTasks);
+            setMemos(mergedMemos);
+            setPlugins(mergedPlugins);
+            setBusinessCards(mergedCards);
+            current = {
+              tasks: mergedTasks,
+              memos: mergedMemos,
+              plugins: mergedPlugins,
+              businessCards: mergedCards,
+            };
+          } catch (err) {
+            setSyncDiagnostics((prev) => ({
+              ...prev,
+              lastError: formatFirestoreSyncError(err, '無法讀取雲端資料'),
+            }));
+          }
+        }
+
+        const remote = remoteSnapshotRef.current;
+        const pushTasks = findItemsNeedingPush(overrideSnapshot?.tasks ?? current.tasks, remote.tasks);
+        const pushMemos = findItemsNeedingPush(overrideSnapshot?.memos ?? current.memos, remote.memos);
+        const pushPlugins = findItemsNeedingPush(overrideSnapshot?.plugins ?? current.plugins, remote.plugins);
+        const pushCards = findItemsNeedingPush(overrideSnapshot?.cards ?? current.businessCards, remote.cards);
+
+        const remoteTaskMap = new Map(remote.tasks.map((t) => [t.id, t]));
+        const remoteMemoMap = new Map(remote.memos.map((m) => [m.id, m]));
+        const remotePluginMap = new Map(remote.plugins.map((p) => [p.id, p]));
+        const remoteCardMap = new Map(remote.cards.map((c) => [c.id, c]));
+
+        const totalToPush = pushTasks.length + pushMemos.length + pushPlugins.length + pushCards.length;
+        if (totalToPush === 0) return 0;
+
+        const pushedTaskAt = new Map<string, number>();
+        const pushedMemoAt = new Map<string, number>();
+        const pushedPluginAt = new Map<string, number>();
+        const pushedCardAt = new Map<string, number>();
+
+        setSyncingNow(true);
         try {
-          const { batch, diagnostics } = await fetchRemoteEncryptedItems(targetUser.uid, targetKey);
-          remoteSnapshotRef.current = batch;
-          remoteSyncedOnceRef.current = true;
-          setSyncDiagnostics({ ...diagnostics, lastError: null });
+          for (const t of pushTasks) {
+            const r = remoteTaskMap.get(t.id);
+            await pushEncryptedSyncItem(targetUser.uid, targetKey, 'task', t, {
+              knownRemoteExists: Boolean(r),
+              knownRemoteVersion: r?.version,
+            });
+            pushedTaskAt.set(t.id, t.updatedAt);
+            remoteTaskMap.set(t.id, { ...t, syncStatus: 'synced' });
+          }
+          for (const m of pushMemos) {
+            const r = remoteMemoMap.get(m.id);
+            await pushEncryptedSyncItem(targetUser.uid, targetKey, 'memo', m, {
+              knownRemoteExists: Boolean(r),
+              knownRemoteVersion: r?.version,
+            });
+            pushedMemoAt.set(m.id, m.updatedAt);
+            remoteMemoMap.set(m.id, { ...m, syncStatus: 'synced' });
+          }
+          for (const p of pushPlugins) {
+            const r = remotePluginMap.get(p.id);
+            await pushEncryptedSyncItem(targetUser.uid, targetKey, 'plugin', p, {
+              knownRemoteExists: Boolean(r),
+              knownRemoteVersion: typeof r?.version === 'number' ? r.version : undefined,
+            });
+            pushedPluginAt.set(p.id, p.updatedAt);
+            remotePluginMap.set(p.id, { ...p, syncStatus: 'synced' });
+          }
+          for (const c of pushCards) {
+            const r = remoteCardMap.get(c.id);
+            await pushEncryptedSyncItem(targetUser.uid, targetKey, 'card', c, {
+              knownRemoteExists: Boolean(r),
+              knownRemoteVersion: r?.version,
+            });
+            pushedCardAt.set(c.id, c.updatedAt);
+            remoteCardMap.set(c.id, { ...c, syncStatus: 'synced' });
+          }
 
-          const mergedTasks = mergeSyncedCollection(overrideSnapshot?.tasks ?? current.tasks, batch.tasks);
-          const mergedMemos = mergeSyncedCollection(overrideSnapshot?.memos ?? current.memos, batch.memos);
-          const mergedPlugins = mergeSyncedCollection(overrideSnapshot?.plugins ?? current.plugins, batch.plugins);
-          const mergedCards = mergeSyncedCollection(overrideSnapshot?.cards ?? current.businessCards, batch.cards);
-          setTasks(mergedTasks);
-          setMemos(mergedMemos);
-          setPlugins(mergedPlugins);
-          setBusinessCards(mergedCards);
-          current = {
-            tasks: mergedTasks,
-            memos: mergedMemos,
-            plugins: mergedPlugins,
-            businessCards: mergedCards,
-          };
+          setLastSyncedAt(Date.now());
+          setSyncDiagnostics((prev) => ({ ...prev, lastError: null }));
+          return pushedTaskAt.size + pushedMemoAt.size + pushedPluginAt.size + pushedCardAt.size;
         } catch (err) {
           setSyncDiagnostics((prev) => ({
             ...prev,
-            lastError: err instanceof Error ? err.message : '無法讀取雲端資料',
+            lastError: formatFirestoreSyncError(err, '上傳同步失敗'),
           }));
+          throw err;
+        } finally {
+          remoteSnapshotRef.current = {
+            tasks: Array.from(remoteTaskMap.values()),
+            memos: Array.from(remoteMemoMap.values()),
+            plugins: Array.from(remotePluginMap.values()),
+            cards: Array.from(remoteCardMap.values()),
+          };
+          if (pushedTaskAt.size > 0) {
+            setTasks((prev) =>
+              prev.map((t) =>
+                pushedTaskAt.get(t.id) === t.updatedAt ? { ...t, syncStatus: 'synced' } : t
+              )
+            );
+          }
+          if (pushedMemoAt.size > 0) {
+            setMemos((prev) =>
+              prev.map((m) =>
+                pushedMemoAt.get(m.id) === m.updatedAt ? { ...m, syncStatus: 'synced' } : m
+              )
+            );
+          }
+          if (pushedPluginAt.size > 0) {
+            setPlugins((prev) =>
+              prev.map((p) =>
+                pushedPluginAt.get(p.id) === p.updatedAt ? { ...p, syncStatus: 'synced' } : p
+              )
+            );
+          }
+          if (pushedCardAt.size > 0) {
+            setBusinessCards((prev) =>
+              prev.map((c) =>
+                pushedCardAt.get(c.id) === c.updatedAt ? { ...c, syncStatus: 'synced' } : c
+              )
+            );
+          }
+          setSyncingNow(false);
         }
-      }
+      };
 
-      const remote = remoteSnapshotRef.current;
-      const pushTasks = findItemsNeedingPush(overrideSnapshot?.tasks ?? current.tasks, remote.tasks);
-      const pushMemos = findItemsNeedingPush(overrideSnapshot?.memos ?? current.memos, remote.memos);
-      const pushPlugins = findItemsNeedingPush(overrideSnapshot?.plugins ?? current.plugins, remote.plugins);
-      const pushCards = findItemsNeedingPush(overrideSnapshot?.cards ?? current.businessCards, remote.cards);
-
-      const totalToPush = pushTasks.length + pushMemos.length + pushPlugins.length + pushCards.length;
-      if (totalToPush === 0) return 0;
-
-      setSyncingNow(true);
-      try {
-        for (const t of pushTasks) await pushEncryptedSyncItem(targetUser.uid, targetKey, 'task', t);
-        for (const m of pushMemos) await pushEncryptedSyncItem(targetUser.uid, targetKey, 'memo', m);
-        for (const p of pushPlugins) await pushEncryptedSyncItem(targetUser.uid, targetKey, 'plugin', p);
-        for (const c of pushCards) await pushEncryptedSyncItem(targetUser.uid, targetKey, 'card', c);
-
-        const pushedTaskIds = new Set(pushTasks.map((t) => t.id));
-        const pushedMemoIds = new Set(pushMemos.map((m) => m.id));
-        const pushedPluginIds = new Set(pushPlugins.map((p) => p.id));
-        const pushedCardIds = new Set(pushCards.map((c) => c.id));
-
-        if (pushedTaskIds.size > 0) {
-          setTasks((prev) => prev.map((t) => (pushedTaskIds.has(t.id) ? { ...t, syncStatus: 'synced' } : t)));
+      const promise = runFlush().finally(() => {
+        if (inFlightFlushRef.current === promise) {
+          inFlightFlushRef.current = null;
         }
-        if (pushedMemoIds.size > 0) {
-          setMemos((prev) => prev.map((m) => (pushedMemoIds.has(m.id) ? { ...m, syncStatus: 'synced' } : m)));
-        }
-        if (pushedPluginIds.size > 0) {
-          setPlugins((prev) => prev.map((p) => (pushedPluginIds.has(p.id) ? { ...p, syncStatus: 'synced' } : p)));
-        }
-        if (pushedCardIds.size > 0) {
-          setBusinessCards((prev) => prev.map((c) => (pushedCardIds.has(c.id) ? { ...c, syncStatus: 'synced' } : c)));
-        }
-        setLastSyncedAt(Date.now());
-        setSyncDiagnostics((prev) => ({ ...prev, lastError: null }));
-        return totalToPush;
-      } catch (err) {
-        setSyncDiagnostics((prev) => ({
-          ...prev,
-          lastError: err instanceof Error ? err.message : '上傳同步失敗',
-        }));
-        throw err;
-      } finally {
-        setSyncingNow(false);
-      }
+      });
+      inFlightFlushRef.current = promise;
+      return promise;
     },
     []
   );
@@ -528,19 +662,44 @@ export default function App() {
       (err) => {
         setSyncDiagnostics((prev) => ({
           ...prev,
-          lastError: err.message || '雲端即時監聽發生錯誤',
+          lastError: formatFirestoreSyncError(err, '雲端即時監聽發生錯誤'),
         }));
       }
     );
 
-    const handleOnline = () => {
-      flushPendingItemsToCloud(user, cryptoKey).catch(() => {});
+    const handleOnlineResume = () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      ensureFirestoreOnline(true)
+        .then(() => flushPendingItemsToCloud(user, cryptoKey))
+        .catch(() => {});
     };
-    window.addEventListener('online', handleOnline);
+    const handleVisibilityResume = () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      ensureFirestoreOnline(false)
+        .then(() => flushPendingItemsToCloud(user, cryptoKey))
+        .catch(() => {});
+    };
+    window.addEventListener('online', handleOnlineResume);
+    document.addEventListener('visibilitychange', handleVisibilityResume);
+
+    const retryTimer = window.setInterval(() => {
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+      const col = latestCollectionsRef.current;
+      const hasPending =
+        col.tasks.some((t) => t.syncStatus === 'pending') ||
+        col.memos.some((m) => m.syncStatus === 'pending') ||
+        col.plugins.some((p) => p.syncStatus === 'pending') ||
+        col.businessCards.some((c) => c.syncStatus === 'pending');
+      if (hasPending) {
+        flushPendingItemsToCloud(user, cryptoKey).catch(() => {});
+      }
+    }, 8000);
 
     return () => {
       unsub();
-      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('online', handleOnlineResume);
+      document.removeEventListener('visibilitychange', handleVisibilityResume);
+      window.clearInterval(retryTimer);
     };
   }, [user, cryptoKey, flushPendingItemsToCloud]);
 
@@ -550,23 +709,85 @@ export default function App() {
       item: TaskItem | MemoItem | WorkflowPlugin | BusinessCardItem
     ) => {
       if (!user || !cryptoKey) return;
+      const remoteSnap = remoteSnapshotRef.current;
+      const existingRemote =
+        kind === 'task'
+          ? remoteSnap.tasks.find((t) => t.id === item.id)
+          : kind === 'memo'
+            ? remoteSnap.memos.find((m) => m.id === item.id)
+            : kind === 'plugin'
+              ? remoteSnap.plugins.find((p) => p.id === item.id)
+              : remoteSnap.cards.find((c) => c.id === item.id);
       try {
-        await pushEncryptedSyncItem(user.uid, cryptoKey, kind, item);
+        await pushEncryptedSyncItem(user.uid, cryptoKey, kind, item, {
+          knownRemoteExists: Boolean(existingRemote),
+          knownRemoteVersion:
+            existingRemote && typeof existingRemote.version === 'number'
+              ? existingRemote.version
+              : undefined,
+        });
         if (kind === 'task') {
-          setTasks((prev) => prev.map((t) => (t.id === item.id ? { ...t, syncStatus: 'synced' } : t)));
+          const syncedTask = { ...(item as TaskItem), syncStatus: 'synced' as const };
+          remoteSnapshotRef.current = {
+            ...remoteSnapshotRef.current,
+            tasks: [
+              ...remoteSnapshotRef.current.tasks.filter((t) => t.id !== item.id),
+              syncedTask,
+            ],
+          };
+          setTasks((prev) =>
+            prev.map((t) => (t.id === item.id && t.updatedAt === item.updatedAt ? { ...t, syncStatus: 'synced' } : t))
+          );
         } else if (kind === 'memo') {
-          setMemos((prev) => prev.map((m) => (m.id === item.id ? { ...m, syncStatus: 'synced' } : m)));
+          const syncedMemo = { ...(item as MemoItem), syncStatus: 'synced' as const };
+          remoteSnapshotRef.current = {
+            ...remoteSnapshotRef.current,
+            memos: [
+              ...remoteSnapshotRef.current.memos.filter((m) => m.id !== item.id),
+              syncedMemo,
+            ],
+          };
+          setMemos((prev) =>
+            prev.map((m) => (m.id === item.id && m.updatedAt === item.updatedAt ? { ...m, syncStatus: 'synced' } : m))
+          );
         } else if (kind === 'plugin') {
-          setPlugins((prev) => prev.map((p) => (p.id === item.id ? { ...p, syncStatus: 'synced' } : p)));
+          const syncedPlugin = { ...(item as WorkflowPlugin), syncStatus: 'synced' as const };
+          remoteSnapshotRef.current = {
+            ...remoteSnapshotRef.current,
+            plugins: [
+              ...remoteSnapshotRef.current.plugins.filter((p) => p.id !== item.id),
+              syncedPlugin,
+            ],
+          };
+          setPlugins((prev) =>
+            prev.map((p) => (p.id === item.id && p.updatedAt === item.updatedAt ? { ...p, syncStatus: 'synced' } : p))
+          );
         } else if (kind === 'card') {
-          setBusinessCards((prev) => prev.map((c) => (c.id === item.id ? { ...c, syncStatus: 'synced' } : c)));
+          const syncedCard = { ...(item as BusinessCardItem), syncStatus: 'synced' as const };
+          remoteSnapshotRef.current = {
+            ...remoteSnapshotRef.current,
+            cards: [
+              ...remoteSnapshotRef.current.cards.filter((c) => c.id !== item.id),
+              syncedCard,
+            ],
+          };
+          setBusinessCards((prev) =>
+            prev.map((c) => (c.id === item.id && c.updatedAt === item.updatedAt ? { ...c, syncStatus: 'synced' } : c))
+          );
         }
         setLastSyncedAt(Date.now());
-      } catch {
-        // Keep local item as pending; offline-first guarantees zero data loss
+        setSyncDiagnostics((prev) => (prev.lastError ? { ...prev, lastError: null } : prev));
+      } catch (err) {
+        const msg = formatFirestoreSyncError(err, '雲端寫入失敗');
+        setSyncDiagnostics((prev) => ({ ...prev, lastError: msg }));
+        showToast(
+          isOfflineSyncError(err)
+            ? '目前離線，資料已安全暫存於本機，連線後自動同步'
+            : '資料已暫存於本機，雲端同步寫入失敗，請至「備份與主題」檢查連線'
+        );
       }
     },
-    [user, cryptoKey]
+    [user, cryptoKey, showToast]
   );
 
   // 7. Auto-Reminder Polling Engine
@@ -1088,14 +1309,11 @@ export default function App() {
     let vaultInitialized = vault.initialized;
 
     if (activeUser) {
-      // Always align with remote vault salt/check so cross-device keys match bit-for-bit
-      vaultInitialized = false;
-      saltToUse = null;
-      checkCipherToUse = null;
-      checkIvToUse = null;
+      // Align with remote vault salt/check when online; preserve local vault metadata if offline
       try {
         const remoteMeta = await fetchUserVaultMeta(activeUser.uid);
         if (remoteMeta) {
+          remoteMetaExistsRef.current = true;
           vaultInitialized = true;
           saltToUse = remoteMeta.vaultSalt;
           checkCipherToUse = remoteMeta.vaultCheckCipher;
@@ -1107,11 +1325,17 @@ export default function App() {
             checkCipher: remoteMeta.vaultCheckCipher,
             checkIv: remoteMeta.vaultCheckIv,
           }));
+        } else {
+          remoteMetaExistsRef.current = false;
+          vaultInitialized = false;
+          saltToUse = null;
+          checkCipherToUse = null;
+          checkIvToUse = null;
         }
       } catch (err) {
         setSyncDiagnostics((prev) => ({
           ...prev,
-          lastError: err instanceof Error ? err.message : '無法讀取雲端金鑰資訊',
+          lastError: formatFirestoreSyncError(err, '無法讀取雲端金鑰資訊'),
         }));
       }
     }
@@ -1130,7 +1354,9 @@ export default function App() {
         checkCipher: checkCipherToUse,
         checkIv: checkIvToUse,
       });
-      setSyncDiagnostics((prev) => ({ ...prev, lastError: null }));
+      if (activeUser && !(typeof navigator !== 'undefined' && navigator.onLine === false)) {
+        setSyncDiagnostics((prev) => ({ ...prev, lastError: null }));
+      }
       if (activeUser) {
         flushPendingItemsToCloud(activeUser, key).catch(() => {});
       }
@@ -1141,6 +1367,32 @@ export default function App() {
     const key = await deriveAesKey(passphrase, salt);
     const { checkCipher, checkIv } = await createVaultCheck(key);
     remoteSyncedOnceRef.current = false;
+
+    if (activeUser) {
+      try {
+        await upsertUserVaultMeta(
+          activeUser.uid,
+          {
+            vaultSalt: salt,
+            vaultCheckCipher: checkCipher,
+            vaultCheckIv: checkIv,
+            themeMode: theme.mode,
+            themeAccent: theme.accent,
+          },
+          false
+        );
+        remoteMetaExistsRef.current = true;
+      } catch (err) {
+        const msg = formatFirestoreSyncError(err, '雲端初始化寫入失敗');
+        setSyncDiagnostics((prev) => ({ ...prev, lastError: msg }));
+        showToast(
+          isOfflineSyncError(err)
+            ? '目前離線，已於本機建立加密空間，連線後將自動同步'
+            : '無法寫入雲端同步空間，請確認網路連線或資料庫權限'
+        );
+      }
+    }
+
     setCryptoKey(key);
     setActivePassphrase(passphrase);
     setVault({
@@ -1152,27 +1404,7 @@ export default function App() {
     });
 
     if (activeUser) {
-      try {
-        await upsertUserVaultMeta(activeUser.uid, {
-          vaultSalt: salt,
-          vaultCheckCipher: checkCipher,
-          vaultCheckIv: checkIv,
-          themeMode: theme.mode,
-          themeAccent: theme.accent,
-        });
-        const current = latestCollectionsRef.current;
-        for (const t of current.tasks) await pushEncryptedSyncItem(activeUser.uid, key, 'task', t);
-        for (const m of current.memos) await pushEncryptedSyncItem(activeUser.uid, key, 'memo', m);
-        for (const p of current.plugins) await pushEncryptedSyncItem(activeUser.uid, key, 'plugin', p);
-        for (const c of current.businessCards) await pushEncryptedSyncItem(activeUser.uid, key, 'card', c);
-        remoteSyncedOnceRef.current = true;
-        setLastSyncedAt(Date.now());
-        setSyncDiagnostics((prev) => ({ ...prev, lastError: null }));
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : '雲端初始化寫入失敗';
-        setSyncDiagnostics((prev) => ({ ...prev, lastError: msg }));
-        showToast('無法寫入雲端同步空間，請確認網路連線或資料庫權限');
-      }
+      flushPendingItemsToCloud(activeUser, key).catch(() => {});
     }
     return true;
   };
@@ -1200,6 +1432,10 @@ export default function App() {
   ): Promise<{ ok: boolean; message: string }> => {
     setAuthLoading(true);
     try {
+      clearSyncRuntimeCaches();
+      remoteSyncedOnceRef.current = false;
+      remoteMetaExistsRef.current = false;
+      remoteSnapshotRef.current = { tasks: [], memos: [], plugins: [], cards: [] };
       const { user: authedUser, displayLabel } = await registerSyncAccount(identifier, password);
       return await finalizeSyncAuth(authedUser, password, displayLabel);
     } catch (err) {
@@ -1217,6 +1453,10 @@ export default function App() {
   ): Promise<{ ok: boolean; message: string }> => {
     setAuthLoading(true);
     try {
+      clearSyncRuntimeCaches();
+      remoteSyncedOnceRef.current = false;
+      remoteMetaExistsRef.current = false;
+      remoteSnapshotRef.current = { tasks: [], memos: [], plugins: [], cards: [] };
       const { user: authedUser, displayLabel } = await signInSyncAccount(identifier, password);
       return await finalizeSyncAuth(authedUser, password, displayLabel);
     } catch (err) {
@@ -1236,6 +1476,10 @@ export default function App() {
     ): Promise<{ ok: boolean; message: string }> => {
       setAuthLoading(true);
       try {
+        clearSyncRuntimeCaches();
+        remoteSyncedOnceRef.current = false;
+        remoteMetaExistsRef.current = false;
+        remoteSnapshotRef.current = { tasks: [], memos: [], plugins: [], cards: [] };
         const { user: authedUser, formattedSerial } = await connectWithSyncSerial(
           serial,
           syncPassword,
@@ -1297,7 +1541,7 @@ export default function App() {
         );
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '強制同步失敗';
+      const msg = formatFirestoreSyncError(err, '強制同步失敗');
       setSyncDiagnostics((prev) => ({ ...prev, lastError: msg }));
       showToast('同步過程發生異常，請確認網路與權限設定');
     } finally {
@@ -1651,9 +1895,17 @@ export default function App() {
           </div>
 
           <div className="hidden md:flex items-center gap-4 text-xs text-stone-500 dark:text-zinc-400 font-mono whitespace-nowrap shrink-0">
-            <span>{vault.unlocked ? '端對端加密已解鎖' : '離線安全模式'}</span>
+            <span>
+              {user && vault.unlocked
+                ? '端對端加密已解鎖'
+                : user
+                  ? '待解鎖同步金鑰'
+                  : vault.unlocked
+                    ? '本機金鑰已解鎖'
+                    : '離線安全模式'}
+            </span>
             <span aria-hidden="true">·</span>
-            <span>{user ? '雲端已連線' : '本機 IndexedDB'}</span>
+            <span>{user && vault.unlocked ? '雲端即時同步中' : user ? '已連線（未解鎖）' : '本機 IndexedDB'}</span>
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
@@ -1837,6 +2089,7 @@ export default function App() {
             <MemosView
               memos={memos}
               vaultUnlocked={vault.unlocked}
+              cloudConnected={Boolean(user)}
               onSaveMemo={handleSaveMemo}
               onDeleteMemo={handleDeleteMemo}
               onSpeakMemo={(memo) => {
@@ -1850,6 +2103,7 @@ export default function App() {
             <BusinessCardsView
               cards={businessCards}
               vaultUnlocked={vault.unlocked}
+              cloudConnected={Boolean(user)}
               isSpeaking={isSpeaking}
               onSaveCard={handleSaveCard}
               onDeleteCard={handleDeleteCard}
@@ -1881,7 +2135,12 @@ export default function App() {
               onTogglePlugin={(id) => {
                 const existing = latestCollectionsRef.current.plugins.find((p) => p.id === id);
                 const updated: WorkflowPlugin | null = existing
-                  ? { ...existing, enabled: !existing.enabled, updatedAt: Date.now() }
+                  ? {
+                      ...existing,
+                      enabled: !existing.enabled,
+                      syncStatus: user && cryptoKey ? 'pending' : 'local',
+                      updatedAt: Date.now(),
+                    }
                   : null;
                 setPlugins((prev) =>
                   prev.map((p) => (p.id === id && updated ? updated : p))
@@ -1904,11 +2163,19 @@ export default function App() {
                 setPlugins((prev) => prev.filter((p) => p.id !== id));
               }}
               onUpdateWebhookUrl={(id, url) => {
+                const existing = latestCollectionsRef.current.plugins.find((p) => p.id === id);
+                const updated: WorkflowPlugin | null = existing
+                  ? {
+                      ...existing,
+                      config: { ...existing.config, webhookUrl: url },
+                      syncStatus: user && cryptoKey ? 'pending' : 'local',
+                      updatedAt: Date.now(),
+                    }
+                  : null;
                 setPlugins((prev) =>
-                  prev.map((p) =>
-                    p.id === id ? { ...p, config: { ...p.config, webhookUrl: url }, updatedAt: Date.now() } : p
-                  )
+                  prev.map((p) => (p.id === id && updated ? updated : p))
                 );
+                if (updated) syncSingleItemToCloud('plugin', updated);
               }}
               onSpeakBriefing={handleSpeakBriefing}
               onSpeakNotice={(text) => speakText(text, voice)}
@@ -1963,6 +2230,7 @@ export default function App() {
               }
               syncDiagnostics={syncDiagnostics}
               activeSyncSerial={activeSyncSerial}
+              activePassphrase={activePassphrase}
               pairedPrefill={pairedPrefill}
               pendingSyncCount={
                 tasks.filter((t) => t.syncStatus === 'pending').length +
@@ -1981,6 +2249,8 @@ export default function App() {
                 setSyncIdentityHint(null);
                 setActiveSyncSerial(null);
                 remoteSyncedOnceRef.current = false;
+                remoteMetaExistsRef.current = false;
+                remoteSnapshotRef.current = { tasks: [], memos: [], plugins: [], cards: [] };
                 setSyncDiagnostics({
                   remoteTotalDocs: 0,
                   decryptedCount: 0,

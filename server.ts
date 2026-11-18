@@ -46,11 +46,30 @@ async function createApp() {
 
   if (!isProduction) {
     const { createServer: createViteServer } = await import('vite');
+    const disableHmr = process.env.DISABLE_HMR === 'true';
     const vite = await createViteServer({
+      plugins: disableHmr
+        ? [
+            {
+              name: 'disable-hmr-client-ws',
+              enforce: 'post',
+              transform(code, id) {
+                if (!id.replace(/\\/g, '/').endsWith('/vite/dist/client/client.mjs')) {
+                  return null;
+                }
+                return code.replace(
+                  /const transport = normalizeModuleRunnerTransport\(\(\(\) => \{[\s\S]*?\}\)\(\)\);/,
+                  'const transport = normalizeModuleRunnerTransport({ async connect() {}, async disconnect() {}, send() {} });'
+                );
+              },
+            },
+          ]
+        : [],
       server: {
         middlewareMode: true,
-        hmr: process.env.DISABLE_HMR === 'true' ? false : { server: httpServer },
-        watch: process.env.DISABLE_HMR === 'true' ? null : undefined,
+        hmr: disableHmr ? false : { server: httpServer },
+        ws: disableHmr ? false : undefined,
+        watch: disableHmr ? null : undefined,
       },
       appType: 'spa',
     });

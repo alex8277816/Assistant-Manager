@@ -7,6 +7,7 @@ export interface NormalizedAccount {
 export interface SyncIdentityHint {
   mode: 'account' | 'serial';
   label: string;
+  serial?: string;
 }
 
 const SYNC_HINT_STORAGE_KEY = 'kairo_sync_identity_hint';
@@ -132,7 +133,11 @@ export function loadSyncIdentityHint(): SyncIdentityHint | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as SyncIdentityHint;
     if (parsed && (parsed.mode === 'account' || parsed.mode === 'serial') && parsed.label) {
-      return parsed;
+      return {
+        mode: parsed.mode,
+        label: parsed.label,
+        serial: typeof parsed.serial === 'string' && parsed.serial ? parsed.serial : undefined,
+      };
     }
   } catch {
     // ignore
@@ -199,3 +204,27 @@ export function formatAuthErrorMessage(error: unknown): string {
   }
   return msg || '同步驗證失敗，請稍後再試。';
 }
+
+export function isOfflineSyncError(error: unknown): boolean {
+  const code =
+    typeof error === 'object' && error !== null && 'code' in error
+      ? String((error as { code: unknown }).code).toLowerCase()
+      : '';
+  const msg = (error instanceof Error ? error.message : String(error || '')).toLowerCase();
+  return (
+    code === 'unavailable' ||
+    msg.includes('client is offline') ||
+    msg.includes('failed to get document because the client is offline') ||
+    msg.includes('network-request-failed') ||
+    msg.includes('could not reach cloud firestore backend')
+  );
+}
+
+export function formatFirestoreSyncError(error: unknown, fallback = '雲端同步失敗'): string {
+  if (isOfflineSyncError(error)) {
+    return '目前處於離線或與雲端連線暫時中斷，資料已安全加密暫存於本機，待連線恢復後將自動同步。';
+  }
+  const raw = error instanceof Error ? error.message : String(error || '');
+  return raw || fallback;
+}
+

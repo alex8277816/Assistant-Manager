@@ -7,6 +7,7 @@ import {
   Moon,
   Plus,
   Puzzle,
+  RefreshCw,
   Settings,
   Square,
   Sun,
@@ -2004,6 +2005,7 @@ export default function App() {
   };
 
   const activeTabMeta = NAV_ITEMS.find((n) => n.id === activeTab)!;
+  const activeQuickLinksCount = quickLinks.filter((l) => !l.deleted).length;
 
   return (
     <div className="min-h-screen bg-stone-50 dark:bg-zinc-950 text-stone-900 dark:text-zinc-100 flex flex-col lg:flex-row">
@@ -2100,12 +2102,20 @@ export default function App() {
           <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
-              onClick={() => setIsMobileLinksOpen(true)}
+              onClick={() => setIsMobileLinksOpen((prev) => !prev)}
+              aria-expanded={isMobileLinksOpen}
+              aria-controls="mobile-quick-links-panel"
               aria-label="開啟常用連結"
-              className="lg:hidden inline-flex items-center gap-1 rounded-lg border border-stone-200 dark:border-zinc-700 px-2.5 py-1.5 text-xs font-medium text-stone-700 dark:text-zinc-200 hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[38px] whitespace-nowrap"
+              className={`lg:hidden inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium min-h-[38px] whitespace-nowrap transition-colors ${
+                isMobileLinksOpen
+                  ? 'accent-border accent-soft-bg accent-text'
+                  : 'border-stone-200 dark:border-zinc-700 text-stone-700 dark:text-zinc-200 hover:bg-stone-100 dark:hover:bg-zinc-800'
+              }`}
             >
               <Link2 className="w-3.5 h-3.5 accent-text" />
-              <span>常用連結</span>
+              <span>
+                常用連結{activeQuickLinksCount > 0 ? ` (${activeQuickLinksCount})` : ''}
+              </span>
             </button>
             {isSpeaking ? (
               <button
@@ -2211,7 +2221,6 @@ export default function App() {
               selectedDate={selectedDate}
               govSettings={govSettings}
               govCache={govCache}
-              quickLinks={quickLinks}
               isSpeaking={isSpeaking}
               onSelectDate={setSelectedDate}
               onQuickAddTask={handleQuickAddTask}
@@ -2249,9 +2258,6 @@ export default function App() {
                 showToast('正在更新行政院人事行政總處假日與停班停課狀態');
               }}
               onSpeakGovStatus={handleSpeakGovStatus}
-              onAddQuickLink={handleAddQuickLink}
-              onUpdateQuickLink={handleUpdateQuickLink}
-              onDeleteQuickLink={handleDeleteQuickLink}
             />
           )}
 
@@ -2590,18 +2596,28 @@ export default function App() {
           role="dialog"
           aria-modal="true"
           aria-label="常用連結管理"
-          className="lg:hidden fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm p-0 sm:p-4"
+          onClick={() => setIsMobileLinksOpen(false)}
+          className="lg:hidden fixed inset-0 z-50 flex items-start justify-center pt-16 px-3 pb-6 bg-black/45 backdrop-blur-xs"
         >
-          <div className="w-full sm:max-w-md rounded-t-3xl sm:rounded-2xl border border-stone-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5 shadow-2xl max-h-[85vh] overflow-y-auto space-y-3">
+          <div
+            id="mobile-quick-links-panel"
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md rounded-2xl border border-stone-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 shadow-2xl max-h-[calc(100vh-5.5rem)] overflow-y-auto space-y-3"
+          >
             <div className="flex items-center justify-between pb-2 border-b border-stone-200 dark:border-zinc-800">
-              <h2 className="text-base font-semibold text-stone-900 dark:text-zinc-100">
-                公司與常用系統連結
-              </h2>
+              <div>
+                <h2 className="text-sm font-semibold text-stone-900 dark:text-zinc-100">
+                  公司與常用系統連結
+                </h2>
+                <p className="text-[11px] text-stone-500 dark:text-zinc-400">
+                  顯示所有自定義網站名稱與完整連結網址，點擊即可開啟
+                </p>
+              </div>
               <button
                 type="button"
                 onClick={() => setIsMobileLinksOpen(false)}
                 aria-label="關閉常用連結視窗"
-                className="p-2 rounded-lg text-stone-500 hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[38px] min-w-[38px] flex items-center justify-center"
+                className="p-2 rounded-lg text-stone-500 hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[38px] min-w-[38px] flex items-center justify-center shrink-0"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -2609,6 +2625,43 @@ export default function App() {
             <SidebarQuickLinks
               links={quickLinks}
               variant="dialog"
+              showFullUrl
+              syncBanner={
+                user && vault.unlocked ? (
+                  <div className="flex items-center justify-between gap-2 rounded-xl border border-stone-200/80 dark:border-zinc-800 bg-stone-50 dark:bg-zinc-950 px-3 py-2 text-[11px] text-stone-600 dark:text-zinc-300">
+                    <span>
+                      已連線同步（{activeQuickLinksCount} 個連結）
+                    </span>
+                    <button
+                      type="button"
+                      disabled={syncingNow}
+                      onClick={() => handleForceTwoWaySync()}
+                      className="inline-flex items-center gap-1 font-medium accent-text hover:underline disabled:opacity-60 shrink-0"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${syncingNow ? 'animate-spin' : ''}`} />
+                      <span>{syncingNow ? '同步中...' : '立即同步'}</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between gap-2 rounded-xl border border-amber-300/80 dark:border-amber-800/70 bg-amber-50/90 dark:bg-amber-950/30 px-3 py-2 text-[11px] text-amber-900 dark:text-amber-200">
+                    <span className="leading-snug">
+                      {user
+                        ? '金鑰庫尚未解鎖，解鎖後即可同步顯示電腦端的常用連結。'
+                        : '目前為本機離線模式，若要同步電腦端連結請先配對連線。'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsMobileLinksOpen(false);
+                        setActiveTab('settings');
+                      }}
+                      className="rounded-lg border border-amber-400/70 dark:border-amber-700 bg-white/80 dark:bg-zinc-900 px-2.5 py-1 text-[11px] font-medium text-amber-900 dark:text-amber-200 whitespace-nowrap shrink-0"
+                    >
+                      {user ? '前往解鎖' : '前往同步'}
+                    </button>
+                  </div>
+                )
+              }
               onAddLink={handleAddQuickLink}
               onUpdateLink={handleUpdateQuickLink}
               onDeleteLink={handleDeleteQuickLink}

@@ -6,6 +6,8 @@ import { formatQuickLinkHost, validateAndNormalizeQuickLink } from '../utils/qui
 interface SidebarQuickLinksProps {
   links: QuickLinkItem[];
   variant?: 'sidebar' | 'dialog';
+  showFullUrl?: boolean;
+  syncBanner?: React.ReactNode;
   onAddLink: (name: string, url: string) => void;
   onUpdateLink: (id: string, name: string, url: string) => void;
   onDeleteLink: (id: string) => void;
@@ -14,6 +16,8 @@ interface SidebarQuickLinksProps {
 export const SidebarQuickLinks: React.FC<SidebarQuickLinksProps> = ({
   links,
   variant = 'sidebar',
+  showFullUrl = variant === 'dialog',
+  syncBanner,
   onAddLink,
   onUpdateLink,
   onDeleteLink,
@@ -165,6 +169,8 @@ export const SidebarQuickLinks: React.FC<SidebarQuickLinksProps> = ({
         </form>
       )}
 
+      {syncBanner}
+
       {activeLinks.length === 0 ? (
         !formOpen && (
           <p className="rounded-xl border border-dashed border-stone-200 dark:border-zinc-800 bg-stone-50/50 dark:bg-zinc-950/30 px-3 py-2.5 text-[11.5px] leading-relaxed text-stone-400 dark:text-zinc-500">
@@ -190,8 +196,15 @@ export const SidebarQuickLinks: React.FC<SidebarQuickLinksProps> = ({
                   <span className="w-7 h-7 rounded-lg border border-stone-200/90 dark:border-zinc-700/80 bg-white dark:bg-zinc-900 flex items-center justify-center shrink-0 mt-0.5 text-stone-400 dark:text-zinc-500 group-hover/link:accent-text transition-colors">
                     <ExternalLink className="w-3.5 h-3.5" />
                   </span>
-                  <span className="flex-1 min-w-0 text-[13px] font-medium leading-snug text-stone-800 dark:text-zinc-100 group-hover/link:accent-text break-words whitespace-normal">
-                    {link.name}
+                  <span className="flex-1 min-w-0">
+                    <span className="block text-[13px] font-medium leading-snug text-stone-800 dark:text-zinc-100 group-hover/link:accent-text break-words whitespace-normal">
+                      {link.name}
+                    </span>
+                    {showFullUrl && (
+                      <span className="mt-1 block font-mono text-[11px] leading-snug text-stone-500 dark:text-zinc-400 break-all whitespace-normal">
+                        {link.url}
+                      </span>
+                    )}
                   </span>
                 </a>
 

@@ -12,6 +12,7 @@ import type {
 } from '../types/assistant';
 import { addDaysToDateStr } from '../utils/smartEngine';
 import { SEED_BASE_TIMESTAMP } from '../utils/syncMerge';
+import { normalizePersistedWorkspace } from '../utils/workspaceSanitizer';
 
 const DB_NAME = 'kairo-assistant-db';
 const DB_VERSION = 1;
@@ -356,6 +357,8 @@ function openDB(): Promise<IDBDatabase> {
 }
 
 export async function loadWorkspaceFromOffline(): Promise<PersistedWorkspace> {
+  const seed = createSeedWorkspace();
+  const today = getTodayDateStr();
   try {
     const db = await openDB();
     const raw = await new Promise<PersistedWorkspace | undefined>((resolve, reject) => {
@@ -365,18 +368,19 @@ export async function loadWorkspaceFromOffline(): Promise<PersistedWorkspace> {
       req.onsuccess = () => resolve(req.result as PersistedWorkspace | undefined);
       req.onerror = () => reject(req.error);
     });
-    if (raw && Array.isArray(raw.tasks)) {
-      return raw;
+    if (raw && typeof raw === 'object' && Array.isArray(raw.tasks)) {
+      return normalizePersistedWorkspace(raw, seed, today);
     }
   } catch {
     try {
       const ls = localStorage.getItem('kairo_workspace_fallback');
-      if (ls) return JSON.parse(ls) as PersistedWorkspace;
+      if (ls) {
+        return normalizePersistedWorkspace(JSON.parse(ls) as Partial<PersistedWorkspace>, seed, today);
+      }
     } catch {
       // ignore
     }
   }
-  const seed = createSeedWorkspace();
   await saveWorkspaceToOffline(seed);
   return seed;
 }

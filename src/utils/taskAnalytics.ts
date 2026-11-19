@@ -47,7 +47,8 @@ const FALLBACK_PALETTE = [
 
 export function resolveTaskTypeLabel(task: TaskItem): string {
   if (task.isMeeting) return '預定會議';
-  const firstTag = task.tags.find((t) => t.trim().length > 0);
+  const tags = Array.isArray(task.tags) ? task.tags : [];
+  const firstTag = tags.find((t) => typeof t === 'string' && t.trim().length > 0);
   return firstTag ? firstTag.trim() : '一般待辦';
 }
 

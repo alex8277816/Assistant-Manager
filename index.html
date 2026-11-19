@@ -31,6 +31,79 @@
   </head>
   <body class="bg-stone-50 text-stone-900 dark:bg-zinc-950 dark:text-zinc-100 antialiased selection:bg-teal-500/20">
     <div id="root"></div>
+    <script>
+      (function () {
+        var RECOVER_KEY = 'kairo_boot_recover_v1';
+        var handled = false;
+        function clearCachesAndReload(reason) {
+          if (handled) return;
+          handled = true;
+          try {
+            if (!sessionStorage.getItem(RECOVER_KEY)) {
+              sessionStorage.setItem(RECOVER_KEY, reason || '1');
+              var jobs = [];
+              if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+                jobs.push(
+                  navigator.serviceWorker.getRegistrations().then(function (regs) {
+                    return Promise.all(regs.map(function (r) { return r.unregister(); }));
+                  })
+                );
+              }
+              if (window.caches && window.caches.keys) {
+                jobs.push(
+                  window.caches.keys().then(function (keys) {
+                    return Promise.all(keys.map(function (k) { return window.caches.delete(k); }));
+                  })
+                );
+              }
+              Promise.all(jobs).finally(function () {
+                window.location.reload();
+              });
+              return;
+            }
+          } catch (e) {}
+
+          var root = document.getElementById('root');
+          if (root && root.childElementCount === 0) {
+            root.innerHTML =
+              '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;font-family:system-ui,-apple-system,sans-serif;">' +
+              '<div style="max-width:420px;width:100%;background:#fff;border:1px solid #e7e5e4;border-radius:16px;padding:24px;box-shadow:0 8px 24px rgba(0,0,0,0.06);">' +
+              '<h1 style="margin:0 0 8px;font-size:16px;font-weight:700;color:#1c1917;">Kairo 隨行助理載入異常</h1>' +
+              '<p style="margin:0 0 16px;font-size:13px;line-height:1.6;color:#57534e;">偵測到舊版快取或網路腳本載入失敗。清除瀏覽器快取後即可恢復正常（不會刪除您的本機資料）。</p>' +
+              '<button id="kairo-hard-recover-btn" type="button" style="width:100%;padding:10px 16px;border:0;border-radius:12px;background:#0f766e;color:#fff;font-size:13px;font-weight:600;cursor:pointer;">清除快取並重新載入</button>' +
+              '</div></div>';
+            var btn = document.getElementById('kairo-hard-recover-btn');
+            if (btn) {
+              btn.onclick = function () {
+                try { sessionStorage.removeItem(RECOVER_KEY); } catch (e) {}
+                handled = false;
+                clearCachesAndReload('manual');
+              };
+            }
+          }
+        }
+
+        window.addEventListener('error', function (ev) {
+          if (window.__KAIRO_MOUNTED__) return;
+          var target = ev && ev.target;
+          if (target && (target.tagName === 'SCRIPT' || target.tagName === 'LINK')) {
+            clearCachesAndReload('asset');
+          }
+        }, true);
+
+        window.addEventListener('vite:preloadError', function (ev) {
+          if (ev && ev.preventDefault) ev.preventDefault();
+          clearCachesAndReload('preload');
+        });
+
+        window.setTimeout(function () {
+          var root = document.getElementById('root');
+          if (!window.__KAIRO_MOUNTED__ && root && root.childElementCount === 0) {
+            clearCachesAndReload('timeout');
+          }
+        }, 5000);
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

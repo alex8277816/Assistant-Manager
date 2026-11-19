@@ -123,19 +123,20 @@ export const TodayScheduleView: React.FC<TodayScheduleViewProps> = ({
 
   const availableTags = useMemo(() => {
     const set = new Set<string>();
-    activeTasks.forEach((t) => t.tags.forEach((tag) => set.add(tag)));
+    activeTasks.forEach((t) => (Array.isArray(t.tags) ? t.tags : []).forEach((tag) => set.add(tag)));
     return Array.from(set);
   }, [activeTasks]);
 
   const filteredTasks = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     const list = dayTasks.filter((t) => {
+      const tags = Array.isArray(t.tags) ? t.tags : [];
       if (statusFilter === 'active' && t.completed) return false;
       if (statusFilter === 'done' && !t.completed) return false;
       if (statusFilter === 'meetings' && !t.isMeeting) return false;
-      if (tagFilter !== 'all' && !t.tags.includes(tagFilter)) return false;
+      if (tagFilter !== 'all' && !tags.includes(tagFilter)) return false;
       if (q) {
-        const hay = `${t.title} ${t.notes} ${t.tags.join(' ')}`.toLowerCase();
+        const hay = `${t.title || ''} ${t.notes || ''} ${tags.join(' ')}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -556,7 +557,7 @@ export const TodayScheduleView: React.FC<TodayScheduleViewProps> = ({
                             </>
                           )}
                           <span aria-hidden="true">·</span>
-                          <span>{task.tags.join(' / ')}</span>
+                          <span>{(Array.isArray(task.tags) ? task.tags : []).join(' / ') || '一般'}</span>
                           {(() => {
                             const summary = !task.completed ? formatTaskReminderSummary(task) : null;
                             if (!summary) return null;

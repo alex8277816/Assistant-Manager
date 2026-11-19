@@ -317,30 +317,38 @@ export default function App() {
     // Same-device cross-tab / installed PWA window sync via BroadcastChannel
     let channel: BroadcastChannel | null = null;
     if (typeof BroadcastChannel !== 'undefined') {
-      channel = new BroadcastChannel('kairo-workspace-sync');
-      channel.onmessage = (event) => {
-        if (!event.data || event.data.senderId === tabIdRef.current) return;
-        loadWorkspaceFromOffline().then((ws) => {
-          suppressBroadcastRef.current = true;
-          setTasks(ws.tasks);
-          setMemos(ws.memos);
-          setPlugins(ws.plugins);
-          setBusinessCards(ws.businessCards || []);
-          setQuickLinks(ws.quickLinks || []);
-          setTheme(ws.theme);
-          setVoice(ws.voice);
-          if (ws.govSettings) setGovSettings(ws.govSettings);
-          if (ws.govCache) setGovCache(ws.govCache);
-          setLastSyncedAt(ws.lastSyncedAt);
-        }).catch(() => {});
-      };
+      try {
+        channel = new BroadcastChannel('kairo-workspace-sync');
+        channel.onmessage = (event) => {
+          if (!event.data || event.data.senderId === tabIdRef.current) return;
+          loadWorkspaceFromOffline().then((ws) => {
+            suppressBroadcastRef.current = true;
+            setTasks(ws.tasks);
+            setMemos(ws.memos);
+            setPlugins(ws.plugins);
+            setBusinessCards(ws.businessCards || []);
+            setQuickLinks(ws.quickLinks || []);
+            setTheme(ws.theme);
+            setVoice(ws.voice);
+            if (ws.govSettings) setGovSettings(ws.govSettings);
+            if (ws.govCache) setGovCache(ws.govCache);
+            setLastSyncedAt(ws.lastSyncedAt);
+          }).catch(() => {});
+        };
+      } catch {
+        channel = null;
+      }
     }
 
     return () => {
       active = false;
       window.removeEventListener('hashchange', consumePairingHash);
       unsubSpeak();
-      channel?.close();
+      try {
+        channel?.close();
+      } catch {
+        // ignore
+      }
     };
   }, []);
 
@@ -364,9 +372,13 @@ export default function App() {
     })
       .then(() => {
         if (shouldBroadcast && typeof BroadcastChannel !== 'undefined') {
-          const bc = new BroadcastChannel('kairo-workspace-sync');
-          bc.postMessage({ senderId: tabIdRef.current, updatedAt: Date.now() });
-          bc.close();
+          try {
+            const bc = new BroadcastChannel('kairo-workspace-sync');
+            bc.postMessage({ senderId: tabIdRef.current, updatedAt: Date.now() });
+            bc.close();
+          } catch {
+            // ignore in restricted environments
+          }
         }
       })
       .catch(() => {});
@@ -375,16 +387,21 @@ export default function App() {
   // 3. Apply Dark Mode & Custom Accent Theme to <html>
   useEffect(() => {
     const root = document.documentElement;
-    root.setAttribute('data-accent', theme.accent);
+    root.setAttribute('data-accent', theme?.accent || 'teal');
 
-    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const media = typeof window.matchMedia === 'function'
+      ? window.matchMedia('(prefers-color-scheme: dark)')
+      : null;
     const applyDark = () => {
-      const isDark = theme.mode === 'dark' || (theme.mode === 'system' && media.matches);
+      const isDark = theme?.mode === 'dark' || (theme?.mode === 'system' && Boolean(media?.matches));
       root.classList.toggle('dark', isDark);
     };
     applyDark();
-    media.addEventListener('change', applyDark);
-    return () => media.removeEventListener('change', applyDark);
+    if (media && typeof media.addEventListener === 'function') {
+      media.addEventListener('change', applyDark);
+      return () => media.removeEventListener('change', applyDark);
+    }
+    return undefined;
   }, [theme]);
 
   // 4. Refresh E2EE Cipher Preview whenever cryptoKey or tasks change
@@ -2040,7 +2057,7 @@ export default function App() {
     return newTasks.length;
   };
 
-  const activeTabMeta = NAV_ITEMS.find((n) => n.id === activeTab)!;
+  const activeTabMeta = NAV_ITEMS.find((n) => n.id === activeTab) ?? NAV_ITEMS[0];
   const sortedActiveQuickLinks = useMemo(
     () => sortAndFilterQuickLinks(quickLinks),
     [quickLinks]

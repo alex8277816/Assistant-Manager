@@ -761,4 +761,36 @@ test('mergeSyncedCollection resolves minor clock skew via numeric version when l
   assert.equal(mergedPending[0].syncStatus, 'pending');
 });
 
+test('normalizePersistedWorkspace safely repairs missing or malformed fields without crashing', async () => {
+  const { normalizePersistedWorkspace } = await import('./workspaceSanitizer');
+  const { createSeedWorkspace } = await import('../services/offlineStore');
+  const seed = createSeedWorkspace();
+
+  const corrupted = {
+    tasks: [
+      { id: 'legacy-1', title: '舊版任務', dueDate: 'invalid', tags: undefined, priority: 'invalid' },
+      null,
+    ],
+    memos: [{ id: 'legacy-m1', title: '舊備忘', tags: null, checklist: 'bad' }],
+    plugins: [{ id: 'legacy-p1', name: '舊插件', config: null }],
+    theme: null,
+    voice: undefined,
+    vault: null,
+    govCache: { year: 'bad', holidays: null },
+  } as unknown as Parameters<typeof normalizePersistedWorkspace>[0];
+
+  const repaired = normalizePersistedWorkspace(corrupted, seed, '2026-11-19');
+  assert.equal(repaired.tasks.length, 1);
+  assert.equal(repaired.tasks[0].dueDate, '2026-11-19');
+  assert.deepEqual(repaired.tasks[0].tags, []);
+  assert.equal(repaired.tasks[0].priority, 'medium');
+  assert.deepEqual(repaired.memos[0].tags, []);
+  assert.deepEqual(repaired.memos[0].checklist, []);
+  assert.equal(repaired.theme.mode, seed.theme.mode);
+  assert.equal(repaired.theme.accent, seed.theme.accent);
+  assert.equal(repaired.vault.unlocked, false);
+  assert.deepEqual(repaired.govCache?.holidays, []);
+});
+
+
 

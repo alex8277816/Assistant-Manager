@@ -694,6 +694,35 @@ test('sortAndFilterQuickLinks sorts pinned items first and filters by category a
   assert.deepEqual(bySearch.map((x) => x.id), [l2.id]);
 });
 
+test('paginateQuickLinks slices 4 per page and clamps out-of-range pages cleanly', async () => {
+  const { paginateQuickLinks, SIDEBAR_LINKS_PAGE_SIZE } = await import('./quickLinks');
+  assert.equal(SIDEBAR_LINKS_PAGE_SIZE, 4);
+
+  const items = Array.from({ length: 6 }, (_, idx) =>
+    buildQuickLinkItem(`系統 ${idx + 1}`, `https://sys${idx + 1}.example.com`, 1000 + idx)
+  );
+
+  const p1 = paginateQuickLinks(items, 1);
+  assert.equal(p1.page, 1);
+  assert.equal(p1.totalPages, 2);
+  assert.equal(p1.totalItems, 6);
+  assert.equal(p1.items.length, 4);
+  assert.equal(p1.items[0].name, '系統 1');
+  assert.equal(p1.items[3].name, '系統 4');
+
+  const p2 = paginateQuickLinks(items, 2);
+  assert.equal(p2.page, 2);
+  assert.equal(p2.items.length, 2);
+  assert.equal(p2.items[0].name, '系統 5');
+  assert.equal(p2.items[1].name, '系統 6');
+
+  // Clamps if items shrink (e.g. after deletion or filter change)
+  const clamped = paginateQuickLinks(items.slice(0, 3), 3);
+  assert.equal(clamped.page, 1);
+  assert.equal(clamped.totalPages, 1);
+  assert.equal(clamped.items.length, 3);
+});
+
 test('mergeSyncedCollection resolves minor clock skew via numeric version when local is not pending', () => {
   const localSynced = makeTask({
     id: 'skew-1',

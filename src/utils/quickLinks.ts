@@ -108,6 +108,38 @@ export function sortAndFilterQuickLinks(
     });
 }
 
+export const SIDEBAR_LINKS_PAGE_SIZE = 4;
+
+export interface QuickLinkPaginationResult {
+  items: QuickLinkItem[];
+  page: number;
+  totalPages: number;
+  totalItems: number;
+  startIndex: number;
+  endIndex: number;
+}
+
+export function paginateQuickLinks(
+  links: QuickLinkItem[],
+  requestedPage: number,
+  pageSize = SIDEBAR_LINKS_PAGE_SIZE
+): QuickLinkPaginationResult {
+  const safeSize = Math.max(1, Math.floor(pageSize));
+  const totalItems = links.length;
+  const totalPages = Math.max(1, Math.ceil(totalItems / safeSize));
+  const page = Math.min(Math.max(1, Math.floor(requestedPage) || 1), totalPages);
+  const startIndex = (page - 1) * safeSize;
+  const endIndex = Math.min(startIndex + safeSize, totalItems);
+  return {
+    items: links.slice(startIndex, endIndex),
+    page,
+    totalPages,
+    totalItems,
+    startIndex,
+    endIndex,
+  };
+}
+
 export function formatQuickLinkHost(rawUrl: string): string {
   try {
     const parsed = new URL(rawUrl);

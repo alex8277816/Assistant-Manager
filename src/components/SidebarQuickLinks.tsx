@@ -1,7 +1,10 @@
 import React, { useId, useMemo, useState } from 'react';
 import {
+  ChevronLeft,
+  ChevronRight,
   ExternalLink,
   Link2,
+  Maximize2,
   Pencil,
   Pin,
   Plus,
@@ -13,7 +16,9 @@ import type { QuickLinkItem } from '../types/assistant';
 import {
   formatQuickLinkHost,
   normalizeQuickLinkCategory,
+  paginateQuickLinks,
   QUICK_LINK_CATEGORIES,
+  SIDEBAR_LINKS_PAGE_SIZE,
   sortAndFilterQuickLinks,
   validateAndNormalizeQuickLink,
 } from '../utils/quickLinks';
@@ -28,6 +33,7 @@ interface SidebarQuickLinksProps {
   variant?: 'sidebar' | 'dialog';
   showFullUrl?: boolean;
   syncBanner?: React.ReactNode;
+  onOpenOverview?: () => void;
   onAddLink: (name: string, url: string, options?: QuickLinkFormOptions) => void;
   onUpdateLink: (id: string, name: string, url: string, options?: QuickLinkFormOptions) => void;
   onTogglePin?: (id: string) => void;
@@ -39,6 +45,7 @@ export const SidebarQuickLinks: React.FC<SidebarQuickLinksProps> = ({
   variant = 'sidebar',
   showFullUrl = variant === 'dialog',
   syncBanner,
+  onOpenOverview,
   onAddLink,
   onUpdateLink,
   onTogglePin,
@@ -65,11 +72,22 @@ export const SidebarQuickLinks: React.FC<SidebarQuickLinksProps> = ({
 
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
+  const [currentPage, setCurrentPage] = useState(1);
 
   const filteredLinks = useMemo(
     () => sortAndFilterQuickLinks(links, searchQuery, categoryFilter),
     [links, searchQuery, categoryFilter]
   );
+
+  const pagination = useMemo(
+    () =>
+      variant === 'sidebar'
+        ? paginateQuickLinks(filteredLinks, currentPage, SIDEBAR_LINKS_PAGE_SIZE)
+        : paginateQuickLinks(filteredLinks, 1, Math.max(1, filteredLinks.length)),
+    [filteredLinks, currentPage, variant]
+  );
+
+  const visibleLinks = variant === 'sidebar' ? pagination.items : filteredLinks;
 
   const availableCategories = useMemo(() => {
     const set = new Set<string>(QUICK_LINK_CATEGORIES);
@@ -124,6 +142,15 @@ export const SidebarQuickLinks: React.FC<SidebarQuickLinksProps> = ({
       onUpdateLink(editingId, res.name, res.url, opts);
     } else {
       onAddLink(res.name, res.url, opts);
+      if (variant === 'sidebar') {
+        setSearchQuery('');
+        setCategoryFilter('all');
+        setCurrentPage(
+          pinnedInput
+            ? 1
+            : Math.ceil((activeLinks.length + 1) / SIDEBAR_LINKS_PAGE_SIZE)
+        );
+      }
     }
     closeForm();
   };
@@ -131,13 +158,13 @@ export const SidebarQuickLinks: React.FC<SidebarQuickLinksProps> = ({
   const wrapperClass =
     variant === 'dialog'
       ? 'space-y-3'
-      : 'px-3 pt-3.5 pb-3 border-t border-stone-200/80 dark:border-zinc-800 space-y-2.5';
+      : 'flex-1 min-h-0 flex flex-col px-3 pt-3 pb-2.5 border-t border-stone-200/80 dark:border-zinc-800 gap-2';
 
   const showFilterBar = activeLinks.length >= 2;
 
   return (
     <div className={wrapperClass}>
-      <div className="flex items-center justify-between px-1">
+      <div className="flex items-center justify-between px-1 shrink-0">
         <span className="text-xs font-semibold tracking-wide text-stone-600 dark:text-zinc-300 flex items-center gap-1.5">
           <Link2 className="w-3.5 h-3.5 accent-text shrink-0" />
           <span>常用連結</span>
@@ -147,24 +174,38 @@ export const SidebarQuickLinks: React.FC<SidebarQuickLinksProps> = ({
             </span>
           )}
         </span>
-        <button
-          type="button"
-          onClick={formOpen && !editingId ? closeForm : openAddForm}
-          aria-label="新增常用連結"
-          className="inline-flex items-center gap-1 rounded-lg border border-stone-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2.5 py-1 text-[11px] font-medium accent-text hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[28px] transition-colors whitespace-nowrap shrink-0"
-        >
-          {formOpen && !editingId ? (
-            <>
-              <X className="w-3 h-3" />
-              <span>收合</span>
-            </>
-          ) : (
-            <>
-              <Plus className="w-3 h-3" />
-              <span>新增</span>
-            </>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {variant === 'sidebar' && onOpenOverview && activeLinks.length > SIDEBAR_LINKS_PAGE_SIZE && (
+            <button
+              type="button"
+              onClick={onOpenOverview}
+              aria-label="展開所有常用連結總覽"
+              title="展開完整常用連結視窗"
+              className="inline-flex items-center gap-1 rounded-lg border border-stone-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1 text-[11px] font-medium text-stone-600 dark:text-zinc-300 hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[28px] transition-colors whitespace-nowrap shrink-0"
+            >
+              <Maximize2 className="w-3 h-3" />
+              <span>總覽</span>
+            </button>
           )}
-        </button>
+          <button
+            type="button"
+            onClick={formOpen && !editingId ? closeForm : openAddForm}
+            aria-label="新增常用連結"
+            className="inline-flex items-center gap-1 rounded-lg border border-stone-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2.5 py-1 text-[11px] font-medium accent-text hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[28px] transition-colors whitespace-nowrap shrink-0"
+          >
+            {formOpen && !editingId ? (
+              <>
+                <X className="w-3 h-3" />
+                <span>收合</span>
+              </>
+            ) : (
+              <>
+                <Plus className="w-3 h-3" />
+                <span>新增</span>
+              </>
+            )}
+          </button>
+        </div>
       </div>
 
       {formOpen && (
@@ -259,7 +300,7 @@ export const SidebarQuickLinks: React.FC<SidebarQuickLinksProps> = ({
       {syncBanner}
 
       {showFilterBar && (
-        <div className="space-y-1.5">
+        <div className="space-y-1.5 shrink-0">
           <div className="relative">
             <Search className="w-3.5 h-3.5 text-stone-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
@@ -267,7 +308,10 @@ export const SidebarQuickLinks: React.FC<SidebarQuickLinksProps> = ({
               type="search"
               aria-label="搜尋常用連結"
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                setCurrentPage(1);
+              }}
               placeholder="搜尋網站名稱、網址或分類..."
               className="w-full rounded-lg border border-stone-200 dark:border-zinc-700 bg-stone-50 dark:bg-zinc-950 pl-8 pr-2.5 py-1.5 text-xs text-stone-900 dark:text-zinc-100 placeholder:text-stone-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-teal-500"
             />
@@ -275,7 +319,10 @@ export const SidebarQuickLinks: React.FC<SidebarQuickLinksProps> = ({
           <div className="flex flex-wrap items-center gap-1">
             <button
               type="button"
-              onClick={() => setCategoryFilter('all')}
+              onClick={() => {
+                setCategoryFilter('all');
+                setCurrentPage(1);
+              }}
               className={`px-2 py-1 rounded-md text-[11px] font-medium whitespace-nowrap shrink-0 transition-colors ${
                 categoryFilter === 'all'
                   ? 'accent-bg'
@@ -286,7 +333,10 @@ export const SidebarQuickLinks: React.FC<SidebarQuickLinksProps> = ({
             </button>
             <button
               type="button"
-              onClick={() => setCategoryFilter('pinned')}
+              onClick={() => {
+                setCategoryFilter('pinned');
+                setCurrentPage(1);
+              }}
               className={`px-2 py-1 rounded-md text-[11px] font-medium whitespace-nowrap shrink-0 transition-colors ${
                 categoryFilter === 'pinned'
                   ? 'accent-bg'
@@ -299,7 +349,10 @@ export const SidebarQuickLinks: React.FC<SidebarQuickLinksProps> = ({
               <button
                 key={cat}
                 type="button"
-                onClick={() => setCategoryFilter(cat)}
+                onClick={() => {
+                  setCategoryFilter(cat);
+                  setCurrentPage(1);
+                }}
                 className={`px-2 py-1 rounded-md text-[11px] font-medium whitespace-nowrap shrink-0 transition-colors ${
                   categoryFilter === cat
                     ? 'accent-bg'
@@ -324,14 +377,23 @@ export const SidebarQuickLinks: React.FC<SidebarQuickLinksProps> = ({
           找不到符合條件的常用連結，請調整搜尋字詞或分類篩選。
         </p>
       ) : (
-        <ul className="space-y-2" data-testid="sidebar-quick-links">
-          {filteredLinks.map((link) => {
+        <ul
+          className={
+            variant === 'sidebar'
+              ? 'flex-1 min-h-0 overflow-y-auto space-y-1.5 pr-0.5'
+              : 'space-y-2'
+          }
+          data-testid="sidebar-quick-links"
+        >
+          {visibleLinks.map((link) => {
             const host = formatQuickLinkHost(link.url);
             const category = normalizeQuickLinkCategory(link.category);
             return (
               <li
                 key={link.id}
-                className={`rounded-xl border transition-colors p-2.5 ${
+                className={`rounded-xl border transition-colors ${
+                  variant === 'sidebar' ? 'p-2' : 'p-2.5'
+                } ${
                   link.pinned
                     ? 'accent-border bg-white dark:bg-zinc-900 shadow-2xs'
                     : 'border-stone-200/85 dark:border-zinc-800 bg-stone-50/70 dark:bg-zinc-950/60 hover:border-stone-300 dark:hover:border-zinc-700 hover:bg-white dark:hover:bg-zinc-900'
@@ -435,6 +497,61 @@ export const SidebarQuickLinks: React.FC<SidebarQuickLinksProps> = ({
             );
           })}
         </ul>
+      )}
+
+      {variant === 'sidebar' && pagination.totalPages > 1 && (
+        <nav
+          aria-label="常用連結分頁"
+          data-testid="sidebar-links-pagination"
+          className="pt-1 border-t border-stone-200/70 dark:border-zinc-800/80 flex items-center justify-between gap-1.5 shrink-0"
+        >
+          <button
+            type="button"
+            disabled={pagination.page <= 1}
+            onClick={() => setCurrentPage(pagination.page - 1)}
+            aria-label="上一頁常用連結"
+            className="inline-flex items-center justify-center gap-0.5 rounded-lg border border-stone-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1 text-[11px] font-medium text-stone-600 dark:text-zinc-300 hover:bg-stone-100 dark:hover:bg-zinc-800 disabled:opacity-40 disabled:pointer-events-none min-h-[28px]"
+          >
+            <ChevronLeft className="w-3.5 h-3.5" />
+            <span>上一頁</span>
+          </button>
+
+          <div className="flex items-center gap-1">
+            {pagination.totalPages <= 5 ? (
+              Array.from({ length: pagination.totalPages }, (_, i) => i + 1).map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => setCurrentPage(p)}
+                  aria-label={`第 ${p} 頁`}
+                  aria-current={p === pagination.page ? 'page' : undefined}
+                  className={`min-w-[26px] h-[26px] px-1.5 rounded-md text-[11px] font-mono tabular-nums font-medium transition-colors ${
+                    p === pagination.page
+                      ? 'accent-bg'
+                      : 'text-stone-500 dark:text-zinc-400 hover:bg-stone-100 dark:hover:bg-zinc-800'
+                  }`}
+                >
+                  {p}
+                </button>
+              ))
+            ) : (
+              <span className="text-[11px] font-mono tabular-nums text-stone-500 dark:text-zinc-400 px-1">
+                {pagination.page} / {pagination.totalPages}
+              </span>
+            )}
+          </div>
+
+          <button
+            type="button"
+            disabled={pagination.page >= pagination.totalPages}
+            onClick={() => setCurrentPage(pagination.page + 1)}
+            aria-label="下一頁常用連結"
+            className="inline-flex items-center justify-center gap-0.5 rounded-lg border border-stone-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1 text-[11px] font-medium text-stone-600 dark:text-zinc-300 hover:bg-stone-100 dark:hover:bg-zinc-800 disabled:opacity-40 disabled:pointer-events-none min-h-[28px]"
+          >
+            <span>下一頁</span>
+            <ChevronRight className="w-3.5 h-3.5" />
+          </button>
+        </nav>
       )}
     </div>
   );

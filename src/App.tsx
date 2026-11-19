@@ -72,9 +72,19 @@ import {
   subscribeSpeakingState,
 } from './services/voiceService';
 import {
+  getDesktopNotificationSupport,
+  getNotificationPermission,
+  isRunningInIframe,
+  loadDesktopNotificationSettings,
   requestSystemNotificationPermission,
+  saveDesktopNotificationSettings,
   sendSystemNotification,
 } from './services/notificationService';
+import {
+  buildCalendarReminderNotificationPayload,
+  buildFloatingItemDesktopPayload,
+  type DesktopNotificationSettings,
+} from './utils/desktopNotificationHelpers';
 import {
   createEncryptedArchive,
   createVaultCheck,
@@ -241,11 +251,61 @@ export default function App() {
 
   const [activeAlerts, setActiveAlerts] = useState<ActiveReminderAlert[]>([]);
   const [floatingNotifications, setFloatingNotifications] = useState<FloatingNotificationItem[]>([]);
+  const [desktopNotifSettings, setDesktopNotifSettings] = useState<DesktopNotificationSettings>(() =>
+    loadDesktopNotificationSettings()
+  );
+  const [notificationPermission, setNotificationPermission] = useState<
+    NotificationPermission | 'unsupported'
+  >(() => getNotificationPermission());
+  const inIframe = useMemo(() => isRunningInIframe(), []);
+  const desktopNotifSupport = useMemo(
+    () => getDesktopNotificationSupport(desktopNotifSettings),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [desktopNotifSettings, notificationPermission]
+  );
   const snoozedRef = useRef<Record<string, number>>({});
   const triggeredKeysRef = useRef<Set<string>>(new Set());
 
   const [pluginLogs, setPluginLogs] = useState<PluginLogEntry[]>([]);
   const [toastMessage, setToastMessage] = useState<string>('');
+
+  const showToast = useCallback((msg: string) => {
+    setToastMessage(msg);
+    window.setTimeout(() => {
+      setToastMessage((prev) => (prev === msg ? '' : prev));
+    }, 3500);
+  }, []);
+
+  const handleUpdateDesktopNotifSettings = useCallback(
+    (next: DesktopNotificationSettings) => {
+      setDesktopNotifSettings(next);
+      saveDesktopNotificationSettings(next);
+    },
+    []
+  );
+
+  const handleEnableDesktopNotifications = useCallback(async () => {
+    const res = await requestSystemNotificationPermission();
+    setNotificationPermission(res);
+    if (res === 'granted') {
+      if (!desktopNotifSettings.enabled) {
+        const next = { ...desktopNotifSettings, enabled: true };
+        setDesktopNotifSettings(next);
+        saveDesktopNotificationSettings(next);
+      }
+      await sendSystemNotification(
+        'Kairo 行事曆桌面彈出提醒已啟用',
+        '重要會議與行事曆提醒到期時，將會直接從電腦桌面彈出通知。',
+        { tag: 'kairo-desktop-notif-enabled' }
+      );
+      showToast('已開啟電腦桌面彈出提醒！');
+    } else if (res === 'denied') {
+      showToast('瀏覽器已封鎖通知權限，請於網址列左側將「通知」改為允許。');
+    } else if (res === 'unsupported') {
+      showToast('目前瀏覽器不支援系統桌面通知。');
+    }
+    return res;
+  }, [desktopNotifSettings, showToast]);
 
   const pushFloatingNotification = useCallback(
     (
@@ -259,7 +319,14 @@ export default function App() {
         return [next, ...filtered].slice(0, 5);
       });
       if (alsoSystemNotif) {
-        sendSystemNotification(next.title, next.body, next.id).catch(() => {});
+        const sysPayload = buildFloatingItemDesktopPayload(next, desktopNotifSettings);
+        if (sysPayload) {
+          sendSystemNotification(sysPayload.title, sysPayload.body, {
+            tag: sysPayload.tag,
+            requireInteraction: sysPayload.requireInteraction,
+            data: sysPayload.data,
+          }).catch(() => {});
+        }
       }
       if (next.kind !== 'typhoon') {
         window.setTimeout(() => {
@@ -269,15 +336,69 @@ export default function App() {
         }, 15000);
       }
     },
-    []
+    [desktopNotifSettings]
   );
 
-  const showToast = useCallback((msg: string) => {
-    setToastMessage(msg);
-    window.setTimeout(() => {
-      setToastMessage((prev) => (prev === msg ? '' : prev));
-    }, 3500);
-  }, []);
+  const handleTestDesktopPopup = useCallback(async () => {
+    let perm = getNotificationPermission();
+    if (perm === 'default') {
+      perm = await requestSystemNotificationPermission();
+      setNotificationPermission(perm);
+    }
+
+    const todayStr = getTodayDateStr();
+    const upcomingTask = tasks.find(
+      (t) => !t.deleted && !t.completed && t.dueDate >= todayStr
+    );
+    const title = upcomingTask
+      ? `${upcomingTask.isMeeting ? '會議提醒' : '行事曆提醒'}：${upcomingTask.title}`
+      : '行事曆桌面彈出提醒測試';
+    const body = upcomingTask
+      ? `${upcomingTask.dueDate} ${upcomingTask.startTime || '全天'} · 桌面彈窗運作正常`
+      : `${todayStr} · 您的行事曆與會議到期時會從電腦桌面彈出顯示`;
+
+    pushFloatingNotification(
+      {
+        id: `desktop-test-${Date.now()}`,
+        kind: upcomingTask?.isMeeting ? 'meeting' : 'calendar',
+        title,
+        body,
+        voiceText: `${title}，${body}`,
+      },
+      false
+    );
+
+    if (perm === 'granted') {
+      if (!desktopNotifSettings.enabled) {
+        const next = { ...desktopNotifSettings, enabled: true };
+        setDesktopNotifSettings(next);
+        saveDesktopNotificationSettings(next);
+      }
+      const sent = await sendSystemNotification(title, body, {
+        tag: `kairo-test-${Date.now()}`,
+        requireInteraction: desktopNotifSettings.requireInteraction,
+        data: {
+          taskId: upcomingTask?.id,
+          dueDate: upcomingTask?.dueDate || todayStr,
+        },
+        onClick: () => {
+          if (upcomingTask) {
+            setSelectedDate(upcomingTask.dueDate);
+            setActiveTab('today');
+          }
+        },
+      });
+      showToast(
+        sent
+          ? '已彈出電腦桌面通知！請查看電腦右下角／右上角通知視窗。'
+          : '已顯示畫面右下角提醒；此瀏覽器環境無法建立作業系統通知。'
+      );
+    } else if (perm === 'denied') {
+      showToast('瀏覽器已封鎖桌面通知權限，請點擊網址列左側圖示允許通知（畫面右下角已同步預覽）。');
+    } else {
+      showToast('尚未取得桌面彈窗授權；若位於預覽框內請點擊「獨立分頁開啟」後允許通知。');
+    }
+  }, [tasks, desktopNotifSettings, pushFloatingNotification, showToast]);
 
   // 1. Load offline IndexedDB workspace immediately on boot
   useEffect(() => {
@@ -926,9 +1047,14 @@ export default function App() {
     [user, cryptoKey, showToast]
   );
 
-  // 7. Auto-Reminder Polling Engine
+  // 7. Auto-Reminder Polling Engine + Focus/Visibility Sync + SW Notification Click Routing
   useEffect(() => {
+    const syncPermission = () => {
+      setNotificationPermission(getNotificationPermission());
+    };
+
     const evaluate = () => {
+      syncPermission();
       const nowMs = Date.now();
       const due = findDueReminders(tasks, nowMs, snoozedRef.current, triggeredKeysRef.current);
       if (due.length === 0) return;
@@ -945,13 +1071,30 @@ export default function App() {
               task.title
             );
           }
-          pushFloatingNotification({
-            id: `due-${alert.triggerKey || task.id}`,
-            kind: task.isMeeting ? 'meeting' : 'todo',
-            title: task.title,
-            body: `${task.dueDate} ${task.startTime || ''} · ${alert.reminderLabel || (task.isMeeting ? '預定會議提醒' : '任務提醒')}`,
-            voiceText: `${task.isMeeting ? '會議提醒' : '任務提醒'}${labelSuffix}：${task.title}，預定時間 ${task.startTime || ''}`,
-          });
+          pushFloatingNotification(
+            {
+              id: `due-${alert.triggerKey || task.id}`,
+              kind: task.isMeeting ? 'meeting' : 'todo',
+              title: task.title,
+              body: `${task.dueDate} ${task.startTime || ''} · ${alert.reminderLabel || (task.isMeeting ? '預定會議提醒' : '任務提醒')}`,
+              voiceText: `${task.isMeeting ? '會議提醒' : '任務提醒'}${labelSuffix}：${task.title}，預定時間 ${task.startTime || ''}`,
+            },
+            false
+          );
+          if (desktopNotifSettings.enabled) {
+            const payload = buildCalendarReminderNotificationPayload(alert, desktopNotifSettings);
+            sendSystemNotification(payload.title, payload.body, {
+              tag: payload.tag,
+              requireInteraction: payload.requireInteraction,
+              data: payload.data,
+              onClick: () => {
+                setSelectedDate(task.dueDate);
+                setActiveTab('today');
+                setEditingTask(task);
+                setIsTaskModalOpen(true);
+              },
+            }).catch(() => {});
+          }
         }
       });
 
@@ -964,10 +1107,48 @@ export default function App() {
       });
     };
 
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        evaluate();
+      }
+    };
+
+    const handleSwMessage = (event: MessageEvent) => {
+      const payload = event.data;
+      if (payload && payload.type === 'KAIRO_NOTIFICATION_CLICK') {
+        const dueDate = payload.data?.dueDate;
+        const taskId = payload.data?.taskId;
+        if (typeof dueDate === 'string' && dueDate) {
+          setSelectedDate(dueDate);
+        }
+        setActiveTab('today');
+        if (typeof taskId === 'string' && taskId) {
+          const matched = tasks.find((t) => t.id === taskId && !t.deleted);
+          if (matched) {
+            setEditingTask(matched);
+            setIsTaskModalOpen(true);
+          }
+        }
+      }
+    };
+
     evaluate();
     const timer = window.setInterval(evaluate, 15000);
-    return () => window.clearInterval(timer);
-  }, [tasks, voice, pushFloatingNotification]);
+    window.addEventListener('focus', evaluate);
+    document.addEventListener('visibilitychange', handleVisibility);
+    if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', handleSwMessage);
+    }
+
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', evaluate);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+        navigator.serviceWorker.removeEventListener('message', handleSwMessage);
+      }
+    };
+  }, [tasks, voice, desktopNotifSettings, pushFloatingNotification]);
 
   // 7a. Automatic Today Pending Tasks Digest Reminder
   const triggerTodayPendingReminder = useCallback(
@@ -2423,7 +2604,14 @@ export default function App() {
           }
           onStopSpeaking={stopSpeaking}
           onSnooze={(taskId) => {
-            snoozedRef.current[taskId] = Date.now() + 10 * 60 * 1000;
+            const snoozeUntil = Date.now() + 10 * 60 * 1000;
+            snoozedRef.current[taskId] = snoozeUntil;
+            for (const key of Array.from(triggeredKeysRef.current)) {
+              if (key.startsWith(`${taskId}:`)) {
+                triggeredKeysRef.current.delete(key);
+                snoozedRef.current[key] = snoozeUntil;
+              }
+            }
             setActiveAlerts((prev) => prev.filter((a) => a.taskId !== taskId));
             showToast('已延後 10 分鐘後再次提醒');
           }}
@@ -2508,6 +2696,10 @@ export default function App() {
               isSpeaking={isSpeaking}
               cloudConnected={Boolean(user)}
               vaultUnlocked={vault.unlocked}
+              desktopNotifSettings={desktopNotifSettings}
+              desktopNotifSupport={desktopNotifSupport}
+              notificationPermission={notificationPermission}
+              isInIframe={inIframe}
               onSelectDate={setSelectedDate}
               onEditTask={(task) => {
                 setEditingTask(task);
@@ -2528,7 +2720,9 @@ export default function App() {
                 stopSpeaking();
                 showToast('已停止語音播報');
               }}
-              onTestFloatingNotification={() => triggerTodayPendingReminder(true)}
+              onUpdateDesktopNotifSettings={handleUpdateDesktopNotifSettings}
+              onEnableDesktopNotifications={handleEnableDesktopNotifications}
+              onTestDesktopPopup={handleTestDesktopPopup}
             />
           )}
 
@@ -2773,10 +2967,12 @@ export default function App() {
                 stopSpeaking();
                 showToast('已停止語音播報');
               }}
-              onTestFloatingNotification={() => {
-                triggerTodayPendingReminder(true);
-              }}
-              onRequestBrowserNotifications={requestSystemNotificationPermission}
+              desktopNotifSettings={desktopNotifSettings}
+              desktopNotifSupport={desktopNotifSupport}
+              notificationPermission={notificationPermission}
+              onUpdateDesktopNotifSettings={handleUpdateDesktopNotifSettings}
+              onTestDesktopPopup={handleTestDesktopPopup}
+              onRequestBrowserNotifications={handleEnableDesktopNotifications}
             />
           )}
         </main>
@@ -2839,6 +3035,9 @@ export default function App() {
         <TaskModal
           initialTask={editingTask}
           defaultDate={selectedDate}
+          desktopNotifSupport={desktopNotifSupport}
+          notificationPermission={notificationPermission}
+          onEnableDesktopNotifications={handleEnableDesktopNotifications}
           onSave={handleSaveTaskModal}
           onDelete={handleDeleteTask}
           onClose={() => {

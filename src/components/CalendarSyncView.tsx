@@ -7,6 +7,7 @@ import {
   CloudLightning,
   Download,
   ExternalLink,
+  MonitorCheck,
   Plus,
   RefreshCw,
   Square,
@@ -27,6 +28,10 @@ import {
   TAIWAN_CITIES,
 } from '../utils/govCalendar';
 import { formatTaskReminderSummary } from '../utils/reminderEngine';
+import type {
+  DesktopNotificationSettings,
+  DesktopNotificationSupportInfo,
+} from '../utils/desktopNotificationHelpers';
 import { PWAInstallButton } from './PWAInstallButton';
 
 interface CalendarSyncViewProps {
@@ -38,6 +43,10 @@ interface CalendarSyncViewProps {
   isSpeaking: boolean;
   cloudConnected?: boolean;
   vaultUnlocked?: boolean;
+  desktopNotifSettings: DesktopNotificationSettings;
+  desktopNotifSupport: DesktopNotificationSupportInfo;
+  notificationPermission: NotificationPermission | 'unsupported';
+  isInIframe: boolean;
   onSelectDate: (dateStr: string) => void;
   onEditTask: (task: TaskItem) => void;
   onRescheduleTask: (taskId: string, newDate: string, newTime?: string) => void;
@@ -48,7 +57,9 @@ interface CalendarSyncViewProps {
   onImportGovHolidaysToTasks: () => number;
   onSpeakGovStatus: () => void;
   onStopSpeaking: () => void;
-  onTestFloatingNotification: () => void;
+  onUpdateDesktopNotifSettings: (next: DesktopNotificationSettings) => void;
+  onEnableDesktopNotifications: () => Promise<NotificationPermission | 'unsupported'>;
+  onTestDesktopPopup: () => Promise<void>;
 }
 
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
@@ -62,6 +73,10 @@ export const CalendarSyncView: React.FC<CalendarSyncViewProps> = ({
   isSpeaking,
   cloudConnected = false,
   vaultUnlocked = false,
+  desktopNotifSettings,
+  desktopNotifSupport,
+  notificationPermission,
+  isInIframe,
   onSelectDate,
   onEditTask,
   onRescheduleTask,
@@ -72,7 +87,9 @@ export const CalendarSyncView: React.FC<CalendarSyncViewProps> = ({
   onImportGovHolidaysToTasks,
   onSpeakGovStatus,
   onStopSpeaking,
-  onTestFloatingNotification,
+  onUpdateDesktopNotifSettings,
+  onEnableDesktopNotifications,
+  onTestDesktopPopup,
 }) => {
   const initialYear = Number(selectedDate.slice(0, 4));
   const initialMonth = Number(selectedDate.slice(5, 7)) - 1;
@@ -236,11 +253,11 @@ export const CalendarSyncView: React.FC<CalendarSyncViewProps> = ({
             <PWAInstallButton label="安裝至桌面 / 手機" />
             <button
               type="button"
-              onClick={onTestFloatingNotification}
+              onClick={() => onTestDesktopPopup()}
               className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 dark:border-zinc-700 bg-stone-50 dark:bg-zinc-800 px-3.5 py-2.5 text-xs font-medium text-stone-800 dark:text-zinc-200 hover:bg-stone-100 dark:hover:bg-zinc-700 min-h-[44px] whitespace-nowrap"
             >
               <BellRing className="w-4 h-4 accent-text" />
-              <span>測試桌面 / 手機提醒</span>
+              <span>測試桌面彈出提醒</span>
             </button>
             <button
               type="button"
@@ -256,6 +273,112 @@ export const CalendarSyncView: React.FC<CalendarSyncViewProps> = ({
         {syncMessage && (
           <p className="mt-3 text-xs font-medium accent-text">{syncMessage}</p>
         )}
+      </section>
+
+      {/* Desktop OS Pop-up Reminder Control Card */}
+      <section
+        aria-label="電腦桌面彈出提醒設定"
+        data-testid="calendar-desktop-popup-card"
+        className="rounded-2xl border border-stone-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 sm:p-5 space-y-3"
+      >
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-sm sm:text-base font-semibold text-stone-900 dark:text-zinc-100 flex items-center gap-2">
+                <MonitorCheck className="w-4 h-4 accent-text" />
+                <span>電腦桌面彈出提醒</span>
+              </h2>
+              <span
+                data-testid="desktop-notif-status-badge"
+                className={`inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-medium ${
+                  desktopNotifSupport.canPopUp
+                    ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300'
+                    : desktopNotifSupport.code === 'blocked' || desktopNotifSupport.code === 'iframe_restricted'
+                      ? 'bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300'
+                      : 'bg-stone-100 dark:bg-zinc-800 text-stone-700 dark:text-zinc-300'
+                }`}
+              >
+                {desktopNotifSupport.badgeLabel}
+              </span>
+            </div>
+            <p className="text-xs text-stone-600 dark:text-zinc-400 leading-relaxed">
+              {desktopNotifSupport.description}
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {notificationPermission !== 'granted' && (
+              <button
+                type="button"
+                onClick={async () => {
+                  const res = await onEnableDesktopNotifications();
+                  if (res === 'granted') {
+                    setSyncMessage('已開啟電腦桌面彈出提醒！重要行事曆與會議到期時會自動從電腦桌面彈出。');
+                  } else if (res === 'denied') {
+                    setSyncMessage('瀏覽器已封鎖通知權限，請於網址列左側允許通知後再重試。');
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 rounded-xl accent-bg px-3.5 py-2 text-xs font-medium min-h-[40px] whitespace-nowrap"
+              >
+                <BellRing className="w-3.5 h-3.5" />
+                <span>開啟電腦桌面彈出提醒</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={async () => {
+                await onTestDesktopPopup();
+                setSyncMessage('已送出桌面彈出測試通知，請確認電腦右下角／右上角通知彈窗與畫面提示。');
+              }}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 dark:border-zinc-700 bg-stone-50 dark:bg-zinc-800 px-3.5 py-2 text-xs font-medium text-stone-800 dark:text-zinc-200 hover:bg-stone-100 dark:hover:bg-zinc-700 min-h-[40px] whitespace-nowrap"
+            >
+              <BellRing className="w-3.5 h-3.5 accent-text" />
+              <span>立即測試桌面彈窗</span>
+            </button>
+            {isInIframe && notificationPermission !== 'granted' && typeof window !== 'undefined' && (
+              <a
+                href={window.location.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-xs font-medium text-amber-900 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/50 min-h-[40px] whitespace-nowrap"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>獨立分頁開啟</span>
+              </a>
+            )}
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-2 pt-2 border-t border-stone-100 dark:border-zinc-800/80 text-xs text-stone-700 dark:text-zinc-300">
+          <label className="inline-flex items-center gap-2 cursor-pointer min-h-[32px]">
+            <input
+              type="checkbox"
+              checked={desktopNotifSettings.enabled}
+              onChange={(e) =>
+                onUpdateDesktopNotifSettings({
+                  ...desktopNotifSettings,
+                  enabled: e.target.checked,
+                })
+              }
+              className="h-4 w-4 rounded accent-control"
+            />
+            <span>行事曆與會議到期時從電腦桌面彈出通知</span>
+          </label>
+          <label className="inline-flex items-center gap-2 cursor-pointer min-h-[32px]">
+            <input
+              type="checkbox"
+              checked={desktopNotifSettings.requireInteraction}
+              onChange={(e) =>
+                onUpdateDesktopNotifSettings({
+                  ...desktopNotifSettings,
+                  requireInteraction: e.target.checked,
+                })
+              }
+              className="h-4 w-4 rounded accent-control"
+            />
+            <span>重要會議桌面彈窗持續停留直到點擊關閉</span>
+          </label>
+        </div>
       </section>
 
       {/* DGPA National Holidays & Typhoon Suspension Integration */}

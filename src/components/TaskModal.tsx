@@ -1,15 +1,19 @@
 import React, { useState } from 'react';
-import { BellPlus, Trash2, X } from 'lucide-react';
+import { BellPlus, MonitorCheck, Trash2, X } from 'lucide-react';
 import type { PriorityLevel, TaskItem, TaskReminderRule } from '../types/assistant';
 import { addDaysToDateStr, inferSmartTags } from '../utils/smartEngine';
 import {
   EXTENDED_REMINDER_PRESETS,
   formatReminderRuleLabel,
 } from '../utils/reminderEngine';
+import type { DesktopNotificationSupportInfo } from '../utils/desktopNotificationHelpers';
 
 interface TaskModalProps {
   initialTask?: TaskItem | null;
   defaultDate: string;
+  desktopNotifSupport?: DesktopNotificationSupportInfo;
+  notificationPermission?: NotificationPermission | 'unsupported';
+  onEnableDesktopNotifications?: () => Promise<NotificationPermission | 'unsupported'>;
   onSave: (draft: Omit<TaskItem, 'id' | 'version' | 'syncStatus' | 'createdAt' | 'updatedAt'>, existingId?: string) => void;
   onDelete?: (id: string) => void;
   onClose: () => void;
@@ -18,6 +22,9 @@ interface TaskModalProps {
 export const TaskModal: React.FC<TaskModalProps> = ({
   initialTask,
   defaultDate,
+  desktopNotifSupport,
+  notificationPermission,
+  onEnableDesktopNotifications,
   onSave,
   onDelete,
   onClose,
@@ -406,6 +413,31 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                   );
                 })}
               </ul>
+            )}
+
+            {desktopNotifSupport && (
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-stone-200/70 dark:border-zinc-800 text-[11px]">
+                <span className="inline-flex items-center gap-1.5 text-stone-600 dark:text-zinc-400">
+                  <MonitorCheck className="w-3.5 h-3.5 accent-text shrink-0" />
+                  <span>電腦桌面彈出通知：{desktopNotifSupport.badgeLabel}</span>
+                </span>
+                {notificationPermission === 'default' && onEnableDesktopNotifications && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const res = await onEnableDesktopNotifications();
+                      if (res === 'granted') {
+                        setReminderFeedback('已開啟電腦桌面彈出提醒！');
+                      } else if (res === 'denied') {
+                        setReminderFeedback('瀏覽器已封鎖通知，請於網址列左側允許通知。');
+                      }
+                    }}
+                    className="rounded-lg border border-stone-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2.5 py-1 text-[11px] font-medium accent-text hover:bg-stone-100 dark:hover:bg-zinc-800"
+                  >
+                    開啟電腦桌面彈出
+                  </button>
+                )}
+              </div>
             )}
           </div>
 

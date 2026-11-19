@@ -46,6 +46,10 @@ import {
 } from '../utils/govCalendar';
 import { generateSyncSerial, isEmailProviderDisabledError } from '../utils/syncAuth';
 import { buildSerialPairingUrl, type ParsedPairingLink } from '../utils/pairingLink';
+import type {
+  DesktopNotificationSettings,
+  DesktopNotificationSupportInfo,
+} from '../utils/desktopNotificationHelpers';
 import type { SyncBatchDiagnostics } from '../services/firebaseSync';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { PWAInstallButton } from './PWAInstallButton';
@@ -95,7 +99,11 @@ interface SettingsBackupViewProps {
   onTestTyphoonVoice: () => void;
   onTestVoice: () => void;
   onStopSpeaking: () => void;
-  onTestFloatingNotification: () => void;
+  desktopNotifSettings: DesktopNotificationSettings;
+  desktopNotifSupport: DesktopNotificationSupportInfo;
+  notificationPermission: NotificationPermission | 'unsupported';
+  onUpdateDesktopNotifSettings: (next: DesktopNotificationSettings) => void;
+  onTestDesktopPopup: () => Promise<void>;
   onRequestBrowserNotifications: () => Promise<NotificationPermission | 'unsupported'>;
 }
 
@@ -148,7 +156,11 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
   onTestTyphoonVoice,
   onTestVoice,
   onStopSpeaking,
-  onTestFloatingNotification,
+  desktopNotifSettings,
+  desktopNotifSupport,
+  notificationPermission,
+  onUpdateDesktopNotifSettings,
+  onTestDesktopPopup,
   onRequestBrowserNotifications,
 }) => {
   const [passphrase, setPassphrase] = useState('');
@@ -157,9 +169,6 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
   const [backupFeedback, setBackupFeedback] = useState('');
   const [restorePassphrase, setRestorePassphrase] = useState('');
   const [filePassphrase, setFilePassphrase] = useState('');
-  const [notifStatus, setNotifStatus] = useState<string>(
-    typeof Notification !== 'undefined' ? Notification.permission : 'unsupported'
-  );
   const [copiedAppUrl, setCopiedAppUrl] = useState(false);
 
   // Non-Google Account+Password & Sync Serial state
@@ -1231,36 +1240,33 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
         </div>
       </section>
 
-      {/* 4. Voice & Auto-Reminder Settings */}
+      {/* 4. Voice & Desktop Notification Settings */}
       <section className="rounded-2xl border border-stone-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <h2 className="text-base font-semibold text-stone-900 dark:text-zinc-100 flex items-center gap-2">
               <Volume2 className="w-4 h-4 accent-text" />
-              <span>語音提醒與系統通知設定</span>
+              <span>語音提醒與電腦桌面彈出通知設定</span>
             </h2>
             <p className="text-xs text-stone-600 dark:text-zinc-400 mt-0.5">
-              自訂任務到期與會議自動播報的語音速度、提示音效與系統推播權限。
+              {desktopNotifSupport.description}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              onClick={onTestFloatingNotification}
+              onClick={() => onTestDesktopPopup()}
               className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 dark:border-zinc-700 px-3.5 py-2 text-xs font-medium hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[40px]"
             >
               <BellRing className="w-3.5 h-3.5 accent-text" />
-              <span>測試桌面右下 / 手機通知</span>
+              <span>測試電腦桌面彈出通知</span>
             </button>
             <button
               type="button"
-              onClick={async () => {
-                const res = await onRequestBrowserNotifications();
-                setNotifStatus(res);
-              }}
+              onClick={() => onRequestBrowserNotifications()}
               className="rounded-xl border border-stone-200 dark:border-zinc-700 px-3.5 py-2 text-xs font-medium hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[40px]"
             >
-              系統通知 ({notifStatus === 'granted' ? '已允許' : notifStatus === 'denied' ? '已封鎖' : '請求授權'})
+              桌面通知權限 ({notificationPermission === 'granted' ? '已允許' : notificationPermission === 'denied' ? '已封鎖' : notificationPermission === 'unsupported' ? '不支援' : '點擊允許'})
             </button>
             {isSpeaking ? (
               <button
@@ -1284,7 +1290,37 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-2">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 pt-2">
+          <label className="flex items-center gap-2.5 text-sm text-stone-700 dark:text-zinc-300 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={desktopNotifSettings.enabled}
+              onChange={(e) =>
+                onUpdateDesktopNotifSettings({
+                  ...desktopNotifSettings,
+                  enabled: e.target.checked,
+                })
+              }
+              className="h-4 w-4 rounded accent-control"
+            />
+            <span>行事曆／會議到期從電腦桌面彈出</span>
+          </label>
+
+          <label className="flex items-center gap-2.5 text-sm text-stone-700 dark:text-zinc-300 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={desktopNotifSettings.requireInteraction}
+              onChange={(e) =>
+                onUpdateDesktopNotifSettings({
+                  ...desktopNotifSettings,
+                  requireInteraction: e.target.checked,
+                })
+              }
+              className="h-4 w-4 rounded accent-control"
+            />
+            <span>重要會議彈窗停留直到點擊關閉</span>
+          </label>
+
           <label className="flex items-center gap-2.5 text-sm text-stone-700 dark:text-zinc-300 cursor-pointer">
             <input
               type="checkbox"

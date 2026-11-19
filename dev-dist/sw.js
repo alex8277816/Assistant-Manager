@@ -69,37 +69,38 @@ if (!self.define) {
 }
 define(['./workbox-69ea122c'], (function (workbox) { 'use strict';
 
-	self.skipWaiting();
-	workbox.clientsClaim();
-	workbox.registerRoute(({
-	  request
-	}) => request.mode === "navigate", new workbox.NetworkFirst({
-	  "cacheName": "html-navigation-cache",
-	  "networkTimeoutSeconds": 3,
-	  plugins: [new workbox.ExpirationPlugin({
-	    maxEntries: 10,
-	    maxAgeSeconds: 604800
-	  }), new workbox.CacheableResponsePlugin({
-	    statuses: [0, 200]
-	  })]
-	}), 'GET');
-	workbox.registerRoute(/^https:\/\/fonts\.googleapis\.com\/.*/i, new workbox.CacheFirst({
-	  "cacheName": "google-fonts-cache",
-	  plugins: [new workbox.ExpirationPlugin({
-	    maxEntries: 10,
-	    maxAgeSeconds: 31536000
-	  }), new workbox.CacheableResponsePlugin({
-	    statuses: [0, 200]
-	  })]
-	}), 'GET');
-	workbox.registerRoute(/^https:\/\/fonts\.gstatic\.com\/.*/i, new workbox.CacheFirst({
-	  "cacheName": "gstatic-fonts-cache",
-	  plugins: [new workbox.ExpirationPlugin({
-	    maxEntries: 10,
-	    maxAgeSeconds: 31536000
-	  }), new workbox.CacheableResponsePlugin({
-	    statuses: [0, 200]
-	  })]
-	}), 'GET');
+  importScripts("/sw-notifications.js");
+  self.skipWaiting();
+  workbox.clientsClaim();
+  workbox.registerRoute(({
+    request
+  }) => request.mode === "navigate", new workbox.NetworkFirst({
+    "cacheName": "html-navigation-cache",
+    "networkTimeoutSeconds": 3,
+    plugins: [new workbox.ExpirationPlugin({
+      maxEntries: 10,
+      maxAgeSeconds: 604800
+    }), new workbox.CacheableResponsePlugin({
+      statuses: [0, 200]
+    })]
+  }), 'GET');
+  workbox.registerRoute(/^https:\/\/fonts\.googleapis\.com\/.*/i, new workbox.CacheFirst({
+    "cacheName": "google-fonts-cache",
+    plugins: [new workbox.ExpirationPlugin({
+      maxEntries: 10,
+      maxAgeSeconds: 31536000
+    }), new workbox.CacheableResponsePlugin({
+      statuses: [0, 200]
+    })]
+  }), 'GET');
+  workbox.registerRoute(/^https:\/\/fonts\.gstatic\.com\/.*/i, new workbox.CacheFirst({
+    "cacheName": "gstatic-fonts-cache",
+    plugins: [new workbox.ExpirationPlugin({
+      maxEntries: 10,
+      maxAgeSeconds: 31536000
+    }), new workbox.CacheableResponsePlugin({
+      statuses: [0, 200]
+    })]
+  }), 'GET');
 
 }));

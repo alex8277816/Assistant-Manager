@@ -860,5 +860,74 @@ test('memoHelpers supports multiple pinned memos, configurable 5-6+ pagination, 
   assert.equal(sanitized?.pinnedToDesktop, true);
 });
 
+test('desktopNotificationHelpers evaluates environment support and builds calendar reminder payloads', async () => {
+  const {
+    DEFAULT_DESKTOP_NOTIFICATION_SETTINGS,
+    buildCalendarReminderNotificationPayload,
+    buildFloatingItemDesktopPayload,
+    evaluateDesktopNotificationSupport,
+    sanitizeDesktopNotificationSettings,
+  } = await import('./desktopNotificationHelpers');
+
+  const ready = evaluateDesktopNotificationSupport({
+    hasNotificationApi: true,
+    permission: 'granted',
+    isSecureContext: true,
+    isInIframe: false,
+    settings: DEFAULT_DESKTOP_NOTIFICATION_SETTINGS,
+  });
+  assert.equal(ready.code, 'ready');
+  assert.equal(ready.canPopUp, true);
+
+  const iframePrompt = evaluateDesktopNotificationSupport({
+    hasNotificationApi: true,
+    permission: 'default',
+    isSecureContext: true,
+    isInIframe: true,
+    settings: DEFAULT_DESKTOP_NOTIFICATION_SETTINGS,
+  });
+  assert.equal(iframePrompt.code, 'iframe_restricted');
+  assert.equal(iframePrompt.canPopUp, false);
+
+  const disabled = evaluateDesktopNotificationSupport({
+    hasNotificationApi: true,
+    permission: 'granted',
+    isSecureContext: true,
+    isInIframe: false,
+    settings: sanitizeDesktopNotificationSettings({ enabled: false }),
+  });
+  assert.equal(disabled.code, 'disabled_by_user');
+  assert.equal(disabled.canPopUp, false);
+
+  const meetingPayload = buildCalendarReminderNotificationPayload(
+    {
+      taskId: 'mtg-1',
+      triggerKey: 'mtg-1:2026-11-19:15:00:15',
+      title: '產品季會同步',
+      dueDate: '2026-11-19',
+      startTime: '15:00',
+      isMeeting: true,
+      reminderLabel: '提前 15 分鐘',
+    },
+    DEFAULT_DESKTOP_NOTIFICATION_SETTINGS
+  );
+  assert.equal(meetingPayload.title, '會議提醒：產品季會同步');
+  assert.equal(meetingPayload.body, '2026-11-19 15:00 · 提前 15 分鐘');
+  assert.equal(meetingPayload.requireInteraction, true);
+  assert.equal(meetingPayload.data.taskId, 'mtg-1');
+
+  const digestSkipped = buildFloatingItemDesktopPayload(
+    {
+      id: 'today-digest-2026-11-19',
+      kind: 'todo',
+      title: '今日待辦',
+      body: '3 項',
+    },
+    { ...DEFAULT_DESKTOP_NOTIFICATION_SETTINGS, includeDailyDigest: false }
+  );
+  assert.equal(digestSkipped, null);
+});
+
+
 
 

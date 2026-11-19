@@ -158,13 +158,13 @@ export const SidebarQuickLinks: React.FC<SidebarQuickLinksProps> = ({
   const wrapperClass =
     variant === 'dialog'
       ? 'space-y-3'
-      : 'flex-1 min-h-0 flex flex-col px-3 pt-3 pb-2.5 border-t border-stone-200/80 dark:border-zinc-800 gap-2';
+      : 'px-3 pt-2.5 pb-2.5 border-t border-stone-200/80 dark:border-zinc-800 space-y-2';
 
   const showFilterBar = activeLinks.length >= 2;
 
   return (
     <div className={wrapperClass}>
-      <div className="flex items-center justify-between px-1 shrink-0">
+      <div className="flex items-center justify-between px-0.5">
         <span className="text-xs font-semibold tracking-wide text-stone-600 dark:text-zinc-300 flex items-center gap-1.5">
           <Link2 className="w-3.5 h-3.5 accent-text shrink-0" />
           <span>常用連結</span>
@@ -299,72 +299,108 @@ export const SidebarQuickLinks: React.FC<SidebarQuickLinksProps> = ({
 
       {syncBanner}
 
-      {showFilterBar && (
-        <div className="space-y-1.5 shrink-0">
-          <div className="relative">
-            <Search className="w-3.5 h-3.5 text-stone-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-            <input
-              id={searchInputId}
-              type="search"
-              aria-label="搜尋常用連結"
-              value={searchQuery}
+      {showFilterBar &&
+        (variant === 'sidebar' ? (
+          <div className="flex items-center gap-1.5">
+            <div className="relative flex-1 min-w-0">
+              <Search className="w-3.5 h-3.5 text-stone-400 absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                id={searchInputId}
+                type="search"
+                aria-label="搜尋常用連結"
+                value={searchQuery}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  setCurrentPage(1);
+                }}
+                placeholder="搜尋連結..."
+                className="w-full h-8 rounded-lg border border-stone-200 dark:border-zinc-700 bg-stone-50 dark:bg-zinc-950 pl-7 pr-2 text-xs text-stone-900 dark:text-zinc-100 placeholder:text-stone-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-teal-500"
+              />
+            </div>
+            <select
+              aria-label="依分類篩選常用連結"
+              value={categoryFilter}
               onChange={(e) => {
-                setSearchQuery(e.target.value);
+                setCategoryFilter(e.target.value);
                 setCurrentPage(1);
               }}
-              placeholder="搜尋網站名稱、網址或分類..."
-              className="w-full rounded-lg border border-stone-200 dark:border-zinc-700 bg-stone-50 dark:bg-zinc-950 pl-8 pr-2.5 py-1.5 text-xs text-stone-900 dark:text-zinc-100 placeholder:text-stone-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-teal-500"
-            />
+              className="w-[88px] h-8 shrink-0 rounded-lg border border-stone-200 dark:border-zinc-700 bg-stone-50 dark:bg-zinc-950 px-1.5 text-[11px] font-medium text-stone-700 dark:text-zinc-200"
+            >
+              <option value="all">全部</option>
+              <option value="pinned">已釘選</option>
+              {availableCategories.map((cat) => (
+                <option key={cat} value={cat}>
+                  {cat}
+                </option>
+              ))}
+            </select>
           </div>
-          <div className="flex flex-wrap items-center gap-1">
-            <button
-              type="button"
-              onClick={() => {
-                setCategoryFilter('all');
-                setCurrentPage(1);
-              }}
-              className={`px-2 py-1 rounded-md text-[11px] font-medium whitespace-nowrap shrink-0 transition-colors ${
-                categoryFilter === 'all'
-                  ? 'accent-bg'
-                  : 'bg-stone-100 dark:bg-zinc-800 text-stone-600 dark:text-zinc-300 hover:bg-stone-200 dark:hover:bg-zinc-700'
-              }`}
-            >
-              全部
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setCategoryFilter('pinned');
-                setCurrentPage(1);
-              }}
-              className={`px-2 py-1 rounded-md text-[11px] font-medium whitespace-nowrap shrink-0 transition-colors ${
-                categoryFilter === 'pinned'
-                  ? 'accent-bg'
-                  : 'bg-stone-100 dark:bg-zinc-800 text-stone-600 dark:text-zinc-300 hover:bg-stone-200 dark:hover:bg-zinc-700'
-              }`}
-            >
-              已釘選
-            </button>
-            {availableCategories.map((cat) => (
+        ) : (
+          <div className="space-y-1.5">
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 text-stone-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                id={searchInputId}
+                type="search"
+                aria-label="搜尋常用連結"
+                value={searchQuery}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  setCurrentPage(1);
+                }}
+                placeholder="搜尋網站名稱、網址或分類..."
+                className="w-full rounded-lg border border-stone-200 dark:border-zinc-700 bg-stone-50 dark:bg-zinc-950 pl-8 pr-2.5 py-1.5 text-xs text-stone-900 dark:text-zinc-100 placeholder:text-stone-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-teal-500"
+              />
+            </div>
+            <div className="flex flex-wrap items-center gap-1">
               <button
-                key={cat}
                 type="button"
                 onClick={() => {
-                  setCategoryFilter(cat);
+                  setCategoryFilter('all');
                   setCurrentPage(1);
                 }}
                 className={`px-2 py-1 rounded-md text-[11px] font-medium whitespace-nowrap shrink-0 transition-colors ${
-                  categoryFilter === cat
+                  categoryFilter === 'all'
                     ? 'accent-bg'
                     : 'bg-stone-100 dark:bg-zinc-800 text-stone-600 dark:text-zinc-300 hover:bg-stone-200 dark:hover:bg-zinc-700'
                 }`}
               >
-                {cat}
+                全部
               </button>
-            ))}
+              <button
+                type="button"
+                onClick={() => {
+                  setCategoryFilter('pinned');
+                  setCurrentPage(1);
+                }}
+                className={`px-2 py-1 rounded-md text-[11px] font-medium whitespace-nowrap shrink-0 transition-colors ${
+                  categoryFilter === 'pinned'
+                    ? 'accent-bg'
+                    : 'bg-stone-100 dark:bg-zinc-800 text-stone-600 dark:text-zinc-300 hover:bg-stone-200 dark:hover:bg-zinc-700'
+                }`}
+              >
+                已釘選
+              </button>
+              {availableCategories.map((cat) => (
+                <button
+                  key={cat}
+                  type="button"
+                  onClick={() => {
+                    setCategoryFilter(cat);
+                    setCurrentPage(1);
+                  }}
+                  className={`px-2 py-1 rounded-md text-[11px] font-medium whitespace-nowrap shrink-0 transition-colors ${
+                    categoryFilter === cat
+                      ? 'accent-bg'
+                      : 'bg-stone-100 dark:bg-zinc-800 text-stone-600 dark:text-zinc-300 hover:bg-stone-200 dark:hover:bg-zinc-700'
+                  }`}
+                >
+                  {cat}
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
-      )}
+        ))}
 
       {activeLinks.length === 0 ? (
         !formOpen && (
@@ -378,11 +414,7 @@ export const SidebarQuickLinks: React.FC<SidebarQuickLinksProps> = ({
         </p>
       ) : (
         <ul
-          className={
-            variant === 'sidebar'
-              ? 'flex-1 min-h-0 overflow-y-auto space-y-1.5 pr-0.5'
-              : 'space-y-2'
-          }
+          className={variant === 'sidebar' ? 'space-y-1.5' : 'space-y-2'}
           data-testid="sidebar-quick-links"
         >
           {visibleLinks.map((link) => {
@@ -392,7 +424,7 @@ export const SidebarQuickLinks: React.FC<SidebarQuickLinksProps> = ({
               <li
                 key={link.id}
                 className={`rounded-xl border transition-colors ${
-                  variant === 'sidebar' ? 'p-2' : 'p-2.5'
+                  variant === 'sidebar' ? 'px-2.5 py-2' : 'p-2.5'
                 } ${
                   link.pinned
                     ? 'accent-border bg-white dark:bg-zinc-900 shadow-2xs'
@@ -404,13 +436,21 @@ export const SidebarQuickLinks: React.FC<SidebarQuickLinksProps> = ({
                   target="_blank"
                   rel="noopener noreferrer"
                   title={`${link.name}\n${link.url}`}
-                  className="group/link flex items-start gap-2.5 w-full rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+                  className="group/link flex items-start gap-2 w-full rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
                 >
-                  <span className="w-7 h-7 rounded-lg border border-stone-200/90 dark:border-zinc-700/80 bg-white dark:bg-zinc-900 flex items-center justify-center shrink-0 mt-0.5 text-stone-400 dark:text-zinc-500 group-hover/link:accent-text transition-colors">
-                    <ExternalLink className="w-3.5 h-3.5" />
+                  <span
+                    className={`rounded-lg border border-stone-200/90 dark:border-zinc-700/80 bg-white dark:bg-zinc-900 flex items-center justify-center shrink-0 text-stone-400 dark:text-zinc-500 group-hover/link:accent-text transition-colors ${
+                      variant === 'sidebar' ? 'w-6 h-6 mt-0.5' : 'w-7 h-7 mt-0.5'
+                    }`}
+                  >
+                    <ExternalLink className={variant === 'sidebar' ? 'w-3 h-3' : 'w-3.5 h-3.5'} />
                   </span>
                   <span className="flex-1 min-w-0">
-                    <span className="block text-[13px] font-medium leading-snug text-stone-800 dark:text-zinc-100 group-hover/link:accent-text break-words whitespace-normal">
+                    <span
+                      className={`block font-medium leading-snug text-stone-800 dark:text-zinc-100 group-hover/link:accent-text break-words whitespace-normal ${
+                        variant === 'sidebar' ? 'text-[12.5px]' : 'text-[13px]'
+                      }`}
+                    >
                       {link.name}
                     </span>
                     {showFullUrl && (
@@ -422,31 +462,21 @@ export const SidebarQuickLinks: React.FC<SidebarQuickLinksProps> = ({
                 </a>
 
                 <div
-                  className={`mt-2 pt-1.5 border-t border-stone-200/60 dark:border-zinc-800/80 ${
-                    variant === 'sidebar'
-                      ? 'space-y-1.5'
-                      : 'flex items-center justify-between gap-2'
+                  className={`border-t border-stone-200/60 dark:border-zinc-800/80 flex items-center justify-between gap-1.5 ${
+                    variant === 'sidebar' ? 'mt-1.5 pt-1' : 'mt-2 pt-1.5'
                   }`}
                 >
                   <span
-                    className={`block min-w-0 truncate text-[10.5px] text-stone-400 dark:text-zinc-500 pl-0.5 ${
-                      variant === 'sidebar' ? '' : 'flex-1'
-                    }`}
-                    title={link.url}
+                    className="flex-1 min-w-0 truncate text-[10.5px] text-stone-400 dark:text-zinc-500 pl-0.5"
+                    title={`${category} · ${link.url}`}
                   >
-                    <span>{category}</span>
-                    {!showFullUrl && (
-                      <>
-                        <span aria-hidden="true"> · </span>
-                        <span className="font-mono">{host}</span>
-                      </>
+                    {variant === 'sidebar' ? (
+                      <span className="font-mono">{host}</span>
+                    ) : (
+                      <span>{category}</span>
                     )}
                   </span>
-                  <div
-                    className={`flex items-center gap-0.5 shrink-0 ${
-                      variant === 'sidebar' ? 'justify-end' : ''
-                    }`}
-                  >
+                  <div className="flex items-center gap-0.5 shrink-0">
                     {onTogglePin && (
                       <button
                         type="button"
@@ -458,14 +488,16 @@ export const SidebarQuickLinks: React.FC<SidebarQuickLinksProps> = ({
                             : `釘選置頂「${link.name}」`
                         }
                         title={link.pinned ? '取消釘選' : '釘選置頂'}
-                        className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium min-h-[26px] transition-colors ${
+                        className={`inline-flex items-center justify-center gap-1 rounded-md text-[11px] font-medium transition-colors ${
+                          variant === 'sidebar' ? 'w-6 h-6 p-0' : 'px-1.5 py-0.5 min-h-[26px]'
+                        } ${
                           link.pinned
                             ? 'accent-text bg-stone-100 dark:bg-zinc-800'
                             : 'text-stone-400 dark:text-zinc-500 hover:text-stone-800 dark:hover:text-zinc-200 hover:bg-stone-200/70 dark:hover:bg-zinc-800'
                         }`}
                       >
                         <Pin className="w-3 h-3" />
-                        <span>{link.pinned ? '已釘選' : '釘選'}</span>
+                        {variant !== 'sidebar' && <span>{link.pinned ? '已釘選' : '釘選'}</span>}
                       </button>
                     )}
                     <button
@@ -473,10 +505,12 @@ export const SidebarQuickLinks: React.FC<SidebarQuickLinksProps> = ({
                       onClick={() => openEditForm(link)}
                       aria-label={`編輯常用連結「${link.name}」`}
                       title="編輯名稱、網址或分類"
-                      className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium text-stone-500 dark:text-zinc-400 hover:text-stone-900 dark:hover:text-zinc-100 hover:bg-stone-200/70 dark:hover:bg-zinc-800 min-h-[26px] transition-colors"
+                      className={`inline-flex items-center justify-center gap-1 rounded-md text-[11px] font-medium text-stone-500 dark:text-zinc-400 hover:text-stone-900 dark:hover:text-zinc-100 hover:bg-stone-200/70 dark:hover:bg-zinc-800 transition-colors ${
+                        variant === 'sidebar' ? 'w-6 h-6 p-0' : 'px-1.5 py-0.5 min-h-[26px]'
+                      }`}
                     >
                       <Pencil className="w-3 h-3" />
-                      <span>編輯</span>
+                      {variant !== 'sidebar' && <span>編輯</span>}
                     </button>
                     <button
                       type="button"
@@ -486,10 +520,12 @@ export const SidebarQuickLinks: React.FC<SidebarQuickLinksProps> = ({
                       }}
                       aria-label={`刪除常用連結「${link.name}」`}
                       title="刪除常用連結"
-                      className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium text-stone-400 dark:text-zinc-500 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 min-h-[26px] transition-colors"
+                      className={`inline-flex items-center justify-center gap-1 rounded-md text-[11px] font-medium text-stone-400 dark:text-zinc-500 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors ${
+                        variant === 'sidebar' ? 'w-6 h-6 p-0' : 'px-1.5 py-0.5 min-h-[26px]'
+                      }`}
                     >
                       <Trash2 className="w-3 h-3" />
-                      <span>刪除</span>
+                      {variant !== 'sidebar' && <span>刪除</span>}
                     </button>
                   </div>
                 </div>
@@ -503,7 +539,7 @@ export const SidebarQuickLinks: React.FC<SidebarQuickLinksProps> = ({
         <nav
           aria-label="常用連結分頁"
           data-testid="sidebar-links-pagination"
-          className="pt-1 border-t border-stone-200/70 dark:border-zinc-800/80 flex items-center justify-between gap-1.5 shrink-0"
+          className="pt-1 border-t border-stone-200/70 dark:border-zinc-800/80 flex items-center justify-between gap-1.5"
         >
           <button
             type="button"

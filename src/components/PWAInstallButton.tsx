@@ -3,9 +3,14 @@ import { Download, MonitorSmartphone, WifiOff, X } from 'lucide-react';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import { useOnlineStatus } from '../hooks/useOnlineStatus';
 
-export const PWAInstallButton: React.FC<{ compact?: boolean; label?: string }> = ({
+export const PWAInstallButton: React.FC<{
+  compact?: boolean;
+  label?: string;
+  className?: string;
+}> = ({
   compact = false,
   label = '安裝至桌面 / 手機',
+  className = '',
 }) => {
   const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
   const [showGuideModal, setShowGuideModal] = useState(false);
@@ -27,9 +32,9 @@ export const PWAInstallButton: React.FC<{ compact?: boolean; label?: string }> =
       <button
         type="button"
         onClick={handleClick}
-        className="inline-flex items-center gap-2 rounded-lg border border-stone-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-xs font-medium text-stone-700 dark:text-zinc-200 hover:bg-stone-100 dark:hover:bg-zinc-800 transition-colors whitespace-nowrap shrink-0 min-h-[40px]"
+        className={`inline-flex items-center justify-center gap-1.5 rounded-lg border border-stone-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-xs font-medium text-stone-700 dark:text-zinc-200 hover:bg-stone-100 dark:hover:bg-zinc-800 transition-colors whitespace-nowrap shrink-0 min-h-[38px] ${className}`}
       >
-        <Download className="w-4 h-4 accent-text" />
+        <Download className="w-3.5 h-3.5 accent-text shrink-0" />
         {!compact && <span>{isIOS ? '加入手機主畫面' : label}</span>}
       </button>
 

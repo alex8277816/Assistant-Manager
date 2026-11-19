@@ -2050,15 +2050,15 @@ export default function App() {
   return (
     <div className="min-h-screen bg-stone-50 dark:bg-zinc-950 text-stone-900 dark:text-zinc-100 flex flex-col lg:flex-row">
       {/* Desktop Left Sidebar */}
-      <aside className="hidden lg:flex lg:flex-col lg:w-[272px] lg:shrink-0 lg:sticky lg:top-0 lg:h-screen border-r border-stone-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
-        <div className="h-16 px-6 flex items-center border-b border-stone-200 dark:border-zinc-800 shrink-0">
+      <aside className="hidden lg:flex lg:flex-col lg:w-[280px] lg:shrink-0 lg:sticky lg:top-0 lg:min-h-screen lg:max-h-screen lg:overflow-y-auto border-r border-stone-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
+        <div className="h-14 px-5 flex items-center border-b border-stone-200 dark:border-zinc-800 shrink-0">
           <span className="font-display text-lg font-bold tracking-tight text-stone-900 dark:text-zinc-100 whitespace-nowrap">
             Kairo 隨行助理
           </span>
         </div>
 
-        <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-          <nav aria-label="主導覽列" className="p-2.5 space-y-1 shrink-0">
+        <div className="flex-1 flex flex-col">
+          <nav aria-label="主導覽列" className="p-2.5 space-y-0.5 shrink-0">
             {NAV_ITEMS.map((item) => {
               const Icon = item.icon;
               const active = activeTab === item.id;
@@ -2067,7 +2067,7 @@ export default function App() {
                   key={item.id}
                   type="button"
                   onClick={() => setActiveTab(item.id)}
-                  className={`w-full flex items-center gap-3 px-3.5 py-2 rounded-xl text-sm font-medium transition-colors min-h-[40px] ${
+                  className={`w-full flex items-center gap-3 px-3 py-1.5 rounded-xl text-sm font-medium transition-colors min-h-[36px] ${
                     active
                       ? 'accent-bg'
                       : 'text-stone-600 dark:text-zinc-400 hover:bg-stone-100 dark:hover:bg-zinc-800 hover:text-stone-900 dark:hover:text-zinc-100'
@@ -2090,7 +2090,7 @@ export default function App() {
           />
         </div>
 
-        <div className="p-4 border-t border-stone-200 dark:border-zinc-800 space-y-2.5 shrink-0">
+        <div className="p-2.5 border-t border-stone-200 dark:border-zinc-800 flex items-center gap-2 shrink-0">
           <button
             type="button"
             onClick={() => {
@@ -2103,12 +2103,13 @@ export default function App() {
                 updateRemoteThemePrefs(user.uid, nextMode, theme.accent).catch(() => {});
               }
             }}
-            className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl border border-stone-200 dark:border-zinc-700 text-xs font-medium text-stone-700 dark:text-zinc-300 hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[42px]"
+            aria-label="切換日 / 夜間外觀"
+            className="flex-1 flex items-center justify-between px-2.5 py-1.5 rounded-lg border border-stone-200 dark:border-zinc-700 text-xs font-medium text-stone-700 dark:text-zinc-300 hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[38px] whitespace-nowrap"
           >
-            <span>切換日 / 夜間外觀</span>
-            {theme.mode === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+            <span>切換外觀</span>
+            {theme.mode === 'dark' ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
           </button>
-          <PWAInstallButton />
+          <PWAInstallButton label="安裝捷徑" className="px-2.5 py-1.5" />
         </div>
       </aside>
 

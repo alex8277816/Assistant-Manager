@@ -928,6 +928,112 @@ test('desktopNotificationHelpers evaluates environment support and builds calend
   assert.equal(digestSkipped, null);
 });
 
+test('cardHelpers supports full contact fields, safe companyUrl normalization, search, and 5-per-page pagination', async () => {
+  const {
+    CARDS_PAGE_SIZE,
+    buildNewBusinessCard,
+    filterBusinessCards,
+    paginateBusinessCards,
+    validateAndNormalizeCardDraft,
+  } = await import('./cardHelpers');
+  const { sanitizeBusinessCardItem } = await import('./workspaceSanitizer');
+
+  assert.equal(CARDS_PAGE_SIZE, 5);
+
+  const badUrl = validateAndNormalizeCardDraft({
+    category: 'client',
+    name: '測試人',
+    company: '公司',
+    department: '資訊部',
+    companyUrl: 'javascript:alert(1)',
+    title: '經理',
+    phone: '0912-000-111',
+    landline: '02-2222-3333',
+    fax: '02-2222-3334',
+    lineId: '@test_id',
+    address: '高雄市前鎮區',
+    email: 'test@example.com',
+    notes: '',
+    pinned: false,
+  });
+  assert.equal(badUrl.ok, false);
+
+  const valid = validateAndNormalizeCardDraft({
+    category: 'colleague',
+    name: '張小華',
+    company: '中鋼運通',
+    department: '船務與資訊處',
+    companyUrl: 'dept.cse.example.com/portal',
+    title: '副理',
+    phone: '0988-111-222',
+    landline: '07-802-1111 #501',
+    fax: '07-802-2222',
+    lineId: 'xiaohua_cse',
+    address: '高雄市小港區中鋼路 1 號',
+    email: 'xiaohua@cse.example.com',
+    notes: '急件請先 Line 聯絡',
+    pinned: true,
+  });
+  assert.equal(valid.ok, true);
+  if (!valid.ok) return;
+  assert.equal(valid.draft.companyUrl, 'https://dept.cse.example.com/portal');
+  assert.equal(valid.draft.department, '船務與資訊處');
+  assert.equal(valid.draft.landline, '07-802-1111 #501');
+  assert.equal(valid.draft.fax, '07-802-2222');
+  assert.equal(valid.draft.lineId, 'xiaohua_cse');
+  assert.equal(valid.draft.address, '高雄市小港區中鋼路 1 號');
+
+  const cardObj = buildNewBusinessCard(valid.draft, 5000, 'pending');
+  const sanitized = sanitizeBusinessCardItem(cardObj);
+  assert.equal(sanitized?.department, '船務與資訊處');
+  assert.equal(sanitized?.companyUrl, 'https://dept.cse.example.com/portal');
+  assert.equal(sanitized?.landline, '07-802-1111 #501');
+  assert.equal(sanitized?.fax, '07-802-2222');
+  assert.equal(sanitized?.lineId, 'xiaohua_cse');
+  assert.equal(sanitized?.address, '高雄市小港區中鋼路 1 號');
+
+  const manyCards = Array.from({ length: 7 }, (_, i) =>
+    buildNewBusinessCard(
+      {
+        category: 'client',
+        name: `聯絡人 ${i + 1}`,
+        company: `公司 ${i + 1}`,
+        department: i === 6 ? '法務簽核處' : '業務部',
+        companyUrl: '',
+        title: '專員',
+        phone: `0910-000-00${i}`,
+        landline: `02-2700-000${i}`,
+        fax: `02-2700-990${i}`,
+        lineId: i === 5 ? 'special_line_99' : `line_${i}`,
+        address: i === 4 ? '臺中市西屯區台灣大道' : '臺北市信義區',
+        email: `u${i}@example.com`,
+        notes: '',
+        pinned: false,
+      },
+      1000 + i * 10
+    )
+  );
+
+  assert.equal(filterBusinessCards(manyCards, 'all', 'special_line_99').length, 1);
+  assert.equal(filterBusinessCards(manyCards, 'all', '法務簽核處').length, 1);
+  assert.equal(filterBusinessCards(manyCards, 'all', '臺中市西屯區').length, 1);
+  assert.equal(filterBusinessCards(manyCards, 'all', '02-2700-9903').length, 1);
+
+  const p1 = paginateBusinessCards(manyCards, 1);
+  assert.equal(p1.page, 1);
+  assert.equal(p1.totalPages, 2);
+  assert.equal(p1.items.length, 5);
+
+  const p2 = paginateBusinessCards(manyCards, 2);
+  assert.equal(p2.page, 2);
+  assert.equal(p2.items.length, 2);
+
+  const pClamped = paginateBusinessCards(manyCards, 9);
+  assert.equal(pClamped.page, 2);
+  assert.equal(pClamped.items.length, 2);
+});
+
+
 
 
 

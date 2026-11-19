@@ -2756,10 +2756,20 @@ export default function App() {
               onSaveCard={handleSaveCard}
               onDeleteCard={handleDeleteCard}
               onSpeakCard={(card) => {
+                const orgLine = [card.company, card.department, card.title].filter(Boolean).join(' ');
+                const contactParts = [
+                  card.landline ? `室內電話 ${card.landline}` : '',
+                  card.phone ? `個人手機 ${card.phone}` : '',
+                  card.lineId ? `Line ID ${card.lineId}` : '',
+                  card.email ? `電子信箱 ${card.email}` : '',
+                  card.address ? `地址 ${card.address}` : '',
+                ]
+                  .filter(Boolean)
+                  .join('，');
                 speakText(
-                  `名片資訊：${card.name}，${card.company || ''} ${card.title || ''}。電話 ${
-                    card.phone || '未填寫'
-                  }，電子信箱 ${card.email || '未填寫'}。${card.notes ? `備註：${card.notes}` : ''}`,
+                  `名片資訊：${card.name}${orgLine ? `，${orgLine}` : ''}。${
+                    contactParts || '尚未填寫聯絡方式'
+                  }。${card.notes ? `備註：${card.notes}` : ''}`,
                   voice,
                   card.name
                 );

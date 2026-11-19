@@ -188,8 +188,14 @@ export interface BusinessCardItem {
   category: BusinessCardCategory;
   name: string;
   company: string;
+  department?: string;
+  companyUrl?: string;
   title: string;
-  phone: string;
+  phone: string; // 個人手機（保留欄位名稱以相容既有同步資料）
+  landline?: string; // 室內電話
+  fax?: string; // 傳真
+  lineId?: string; // Line ID
+  address?: string; // 地址
   email: string;
   notes: string;
   pinned: boolean;

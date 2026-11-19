@@ -792,5 +792,73 @@ test('normalizePersistedWorkspace safely repairs missing or malformed fields wit
   assert.deepEqual(repaired.govCache?.holidays, []);
 });
 
+test('memoHelpers supports multiple pinned memos, configurable 5-6+ pagination, and desktop sticky memos', async () => {
+  const {
+    DEFAULT_MEMO_PAGE_SIZE,
+    getDesktopPinnedMemos,
+    normalizeMemoPageSize,
+    paginateMemos,
+    sortAndFilterMemos,
+  } = await import('./memoHelpers');
+  const { sanitizeMemoItem } = await import('./workspaceSanitizer');
+
+  assert.equal(DEFAULT_MEMO_PAGE_SIZE, 6);
+  assert.equal(normalizeMemoPageSize(3), 5);
+  assert.equal(normalizeMemoPageSize(5), 5);
+  assert.equal(normalizeMemoPageSize(6), 6);
+
+  const memos: MemoItem[] = Array.from({ length: 8 }, (_, i) => ({
+    id: `m-${i + 1}`,
+    title: `備忘錄 ${i + 1}`,
+    content: i === 2 ? '中鋼郵局代辦時間 9:30~16:20' : `內容 ${i + 1}`,
+    tags: i % 2 === 0 ? ['公司'] : ['個人'],
+    pinned: i === 1 || i === 4 || i === 6, // 3 pinned memos simultaneously
+    pinnedToDesktop: i === 2 || i === 4, // 2 desktop sticky memos
+    checklist: [],
+    version: 1,
+    syncStatus: 'local',
+    createdAt: 1000 + i,
+    updatedAt: 2000 + i * 10,
+  }));
+
+  const sortedAll = sortAndFilterMemos(memos, '', 'all');
+  assert.equal(sortedAll.length, 8);
+  // All 3 pinned memos appear first in newest-first order
+  assert.deepEqual(
+    sortedAll.slice(0, 3).map((m) => m.id),
+    ['m-7', 'm-5', 'm-2']
+  );
+
+  const pinnedOnly = sortAndFilterMemos(memos, '', 'pinned');
+  assert.equal(pinnedOnly.length, 3);
+
+  const page1 = paginateMemos(sortedAll, 1, 6);
+  assert.equal(page1.page, 1);
+  assert.equal(page1.totalPages, 2);
+  assert.equal(page1.items.length, 6);
+
+  const page2 = paginateMemos(sortedAll, 2, 6);
+  assert.equal(page2.page, 2);
+  assert.equal(page2.items.length, 2);
+
+  const page5PerPage = paginateMemos(sortedAll, 2, 5);
+  assert.equal(page5PerPage.items.length, 3);
+
+  const desktopSticky = getDesktopPinnedMemos(memos);
+  assert.deepEqual(
+    desktopSticky.map((m) => m.id),
+    ['m-5', 'm-3'] // pinned one first, then newest
+  );
+
+  const sanitized = sanitizeMemoItem({
+    id: 'm-san',
+    title: '郵局電話',
+    pinned: true,
+    pinnedToDesktop: true,
+  });
+  assert.equal(sanitized?.pinned, true);
+  assert.equal(sanitized?.pinnedToDesktop, true);
+});
+
 
 

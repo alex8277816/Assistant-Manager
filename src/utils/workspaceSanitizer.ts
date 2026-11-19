@@ -57,6 +57,7 @@ export function sanitizeMemoItem(raw: Partial<MemoItem> | null | undefined): Mem
     content: typeof raw.content === 'string' ? raw.content : '',
     tags: Array.isArray(raw.tags) ? raw.tags.filter((t): t is string => typeof t === 'string') : [],
     pinned: Boolean(raw.pinned),
+    pinnedToDesktop: Boolean(raw.pinnedToDesktop),
     checklist: Array.isArray(raw.checklist)
       ? raw.checklist
           .filter((c): c is { id: string; text: string; done: boolean } => Boolean(c && typeof c === 'object'))

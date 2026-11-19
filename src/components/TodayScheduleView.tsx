@@ -15,6 +15,7 @@ import {
 import type {
   GovSettings,
   GovSyncCache,
+  MemoItem,
   SortMode,
   TaskItem,
 } from '../types/assistant';
@@ -28,6 +29,7 @@ import { getUpcomingHolidays } from '../utils/govCalendar';
 import { formatTaskReminderSummary } from '../utils/reminderEngine';
 import { isSpeechRecognitionSupported, startVoiceDictation } from '../services/voiceService';
 import { TodayAnalyticsCard } from './TodayAnalyticsCard';
+import { DesktopStickyDockWidget } from './DesktopStickyMemos';
 
 interface TodayScheduleViewProps {
   tasks: TaskItem[];
@@ -45,6 +47,12 @@ interface TodayScheduleViewProps {
   onTriggerTodayAutoReminder: () => void;
   onOpenNewTaskModal: () => void;
   onJumpToPomodoro: (taskId: string) => void;
+  desktopPinnedMemos?: MemoItem[];
+  floatingMemoIds?: string[];
+  onCopyMemo?: (memo: MemoItem) => void;
+  onToggleFloatingMemo?: (id: string) => void;
+  onUnpinDesktopMemo?: (id: string) => void;
+  onOpenMemoInMemos?: (memoId?: string) => void;
   onSyncGovNow: () => void;
   onSpeakGovStatus: () => void;
 }
@@ -81,6 +89,12 @@ export const TodayScheduleView: React.FC<TodayScheduleViewProps> = ({
   onTriggerTodayAutoReminder,
   onOpenNewTaskModal,
   onJumpToPomodoro,
+  desktopPinnedMemos = [],
+  floatingMemoIds = [],
+  onCopyMemo,
+  onToggleFloatingMemo,
+  onUnpinDesktopMemo,
+  onOpenMemoInMemos,
   onSyncGovNow,
   onSpeakGovStatus,
 }) => {
@@ -611,6 +625,17 @@ export const TodayScheduleView: React.FC<TodayScheduleViewProps> = ({
 
       {/* Desktop Assistant Context Dock */}
       <aside className="space-y-4">
+        {onOpenMemoInMemos && onToggleFloatingMemo && onUnpinDesktopMemo && onCopyMemo && (
+          <DesktopStickyDockWidget
+            memos={desktopPinnedMemos}
+            floatingMemoIds={floatingMemoIds}
+            onCopyMemo={onCopyMemo}
+            onToggleFloating={onToggleFloatingMemo}
+            onUnpinDesktop={onUnpinDesktopMemo}
+            onOpenMemoInMemos={onOpenMemoInMemos}
+          />
+        )}
+
         <div className="rounded-2xl border border-stone-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5">
           <h2 className="text-sm font-semibold text-stone-900 dark:text-zinc-100">
             下一場提醒預告

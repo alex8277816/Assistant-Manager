@@ -52,6 +52,7 @@ export interface MemoItem {
   content: string;
   tags: string[];
   pinned: boolean;
+  pinnedToDesktop?: boolean;
   checklist: MemoChecklistItem[];
   version: number;
   deleted?: boolean;

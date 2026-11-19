@@ -12,6 +12,7 @@ import {
   RefreshCw,
   Settings,
   Square,
+  StickyNote,
   Sun,
   Users,
   Volume2,
@@ -113,7 +114,9 @@ import {
   filterTyphoonRegionsForCity,
   getUpcomingHolidays,
 } from './utils/govCalendar';
+import { getDesktopPinnedMemos } from './utils/memoHelpers';
 import { BusinessCardsView } from './components/BusinessCardsView';
+import { FloatingStickyMemosOverlay, StickyMemoCard } from './components/DesktopStickyMemos';
 import { FloatingNotificationStack } from './components/FloatingNotificationStack';
 import { GovAlertBanner } from './components/GovAlertBanner';
 import { OfflineBanner, PWAInstallButton } from './components/PWAInstallButton';
@@ -156,6 +159,18 @@ export default function App() {
     initialSeed.quickLinks || []
   );
   const [isMobileLinksOpen, setIsMobileLinksOpen] = useState(false);
+  const [isStickyDrawerOpen, setIsStickyDrawerOpen] = useState(false);
+  const [selectedMemoId, setSelectedMemoId] = useState<string | null>(null);
+  const [floatingMemoIds, setFloatingMemoIds] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem('kairo_floating_memo_ids_v1');
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [];
+    } catch {
+      return [];
+    }
+  });
   const [theme, setTheme] = useState<ThemeSettings>(initialSeed.theme);
   const [voice, setVoice] = useState<VoiceSettings>(initialSeed.voice);
   const [vault, setVault] = useState<VaultState>(initialSeed.vault);
@@ -1330,7 +1345,7 @@ export default function App() {
   const handleSaveMemo = (
     draft: Omit<MemoItem, 'id' | 'version' | 'syncStatus' | 'createdAt' | 'updatedAt'>,
     existingId?: string
-  ) => {
+  ): string => {
     const now = Date.now();
     if (existingId) {
       const existing = latestCollectionsRef.current.memos.find((m) => m.id === existingId);
@@ -1345,18 +1360,109 @@ export default function App() {
         : null;
       setMemos((prev) => prev.map((m) => (m.id === existingId && updated ? updated : m)));
       if (updated) syncSingleItemToCloud('memo', updated);
-    } else {
-      const created: MemoItem = {
-        ...draft,
-        id: `memo-${now}-${Math.random().toString(36).slice(2, 6)}`,
-        version: 1,
-        syncStatus: user ? 'pending' : 'local',
-        createdAt: now,
-        updatedAt: now,
-      };
-      setMemos((prev) => [created, ...prev]);
-      syncSingleItemToCloud('memo', created);
+      return existingId;
     }
+    const created: MemoItem = {
+      ...draft,
+      id: `memo-${now}-${Math.random().toString(36).slice(2, 6)}`,
+      version: 1,
+      syncStatus: user ? 'pending' : 'local',
+      createdAt: now,
+      updatedAt: now,
+    };
+    setMemos((prev) => [created, ...prev]);
+    syncSingleItemToCloud('memo', created);
+    return created.id;
+  };
+
+  const handleToggleMemoPin = (id: string) => {
+    const now = Date.now();
+    const existing = latestCollectionsRef.current.memos.find((m) => m.id === id);
+    if (!existing) return;
+    const nextPinned = !existing.pinned;
+    const updated: MemoItem = {
+      ...existing,
+      pinned: nextPinned,
+      version: nextItemVersion(existing.version),
+      syncStatus: user ? 'pending' : 'local',
+      updatedAt: now,
+    };
+    setMemos((prev) => prev.map((m) => (m.id === id ? updated : m)));
+    syncSingleItemToCloud('memo', updated);
+    showToast(nextPinned ? `已置頂備忘錄「${existing.title}」` : `已取消置頂「${existing.title}」`);
+  };
+
+  const handleToggleDesktopPinMemo = (id: string, forceValue?: boolean) => {
+    const now = Date.now();
+    const existing = latestCollectionsRef.current.memos.find((m) => m.id === id);
+    if (!existing) return;
+    const nextDesktop =
+      typeof forceValue === 'boolean' ? forceValue : !Boolean(existing.pinnedToDesktop);
+    const updated: MemoItem = {
+      ...existing,
+      pinnedToDesktop: nextDesktop,
+      version: nextItemVersion(existing.version),
+      syncStatus: user ? 'pending' : 'local',
+      updatedAt: now,
+    };
+    setMemos((prev) => prev.map((m) => (m.id === id ? updated : m)));
+    if (!nextDesktop) {
+      setFloatingMemoIds((prev) => {
+        const next = prev.filter((fid) => fid !== id);
+        try {
+          localStorage.setItem('kairo_floating_memo_ids_v1', JSON.stringify(next));
+        } catch {
+          // ignore
+        }
+        return next;
+      });
+    }
+    syncSingleItemToCloud('memo', updated);
+    showToast(
+      nextDesktop
+        ? `已將「${existing.title}」釘選到桌面便利貼`
+        : `已從桌面便利貼移除「${existing.title}」`
+    );
+  };
+
+  const handleToggleFloatingMemo = (id: string) => {
+    const existing = latestCollectionsRef.current.memos.find((m) => m.id === id && !m.deleted);
+    if (!existing) return;
+    if (!existing.pinnedToDesktop) {
+      handleToggleDesktopPinMemo(id, true);
+    }
+    setFloatingMemoIds((prev) => {
+      const exists = prev.includes(id);
+      const next = exists ? prev.filter((fid) => fid !== id) : [...prev, id];
+      try {
+        localStorage.setItem('kairo_floating_memo_ids_v1', JSON.stringify(next));
+      } catch {
+        // ignore
+      }
+      showToast(
+        exists
+          ? `已收回浮動便利貼「${existing.title}」`
+          : `已將「${existing.title}」拉出為全域浮動便利貼（可自由拖曳位置）`
+      );
+      return next;
+    });
+  };
+
+  const handleToggleMemoChecklistItem = (memoId: string, itemId: string) => {
+    const now = Date.now();
+    const existing = latestCollectionsRef.current.memos.find((m) => m.id === memoId);
+    if (!existing) return;
+    const updated: MemoItem = {
+      ...existing,
+      checklist: existing.checklist.map((item) =>
+        item.id === itemId ? { ...item, done: !item.done } : item
+      ),
+      version: nextItemVersion(existing.version),
+      syncStatus: user ? 'pending' : 'local',
+      updatedAt: now,
+    };
+    setMemos((prev) => prev.map((m) => (m.id === memoId ? updated : m)));
+    syncSingleItemToCloud('memo', updated);
   };
 
   const handleDeleteMemo = (id: string) => {
@@ -1372,6 +1478,15 @@ export default function App() {
         }
       : null;
     setMemos((prev) => prev.map((m) => (m.id === id && deletedMemo ? deletedMemo : m)));
+    setFloatingMemoIds((prev) => {
+      const next = prev.filter((fid) => fid !== id);
+      try {
+        localStorage.setItem('kairo_floating_memo_ids_v1', JSON.stringify(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
     if (deletedMemo) syncSingleItemToCloud('memo', deletedMemo);
     showToast('已刪除加密備忘錄');
   };
@@ -2063,6 +2178,12 @@ export default function App() {
     [quickLinks]
   );
   const activeQuickLinksCount = sortedActiveQuickLinks.length;
+  const desktopPinnedMemos = useMemo(() => getDesktopPinnedMemos(memos), [memos]);
+  const floatingMemos = useMemo(
+    () =>
+      desktopPinnedMemos.filter((m) => floatingMemoIds.includes(m.id)),
+    [desktopPinnedMemos, floatingMemoIds]
+  );
 
   return (
     <div className="min-h-screen bg-stone-50 dark:bg-zinc-950 text-stone-900 dark:text-zinc-100 flex flex-col lg:flex-row">
@@ -2135,9 +2256,9 @@ export default function App() {
         <OfflineBanner />
 
         {/* Top Bar Contract: 3 clean zones separated by gap-8 */}
-        <header className="sticky top-0 z-30 h-14 lg:h-16 px-4 lg:px-8 border-b border-stone-200 dark:border-zinc-800 bg-white/90 dark:bg-zinc-900/90 backdrop-blur-md flex items-center justify-between gap-4 sm:gap-8">
-          <div className="min-w-0 flex items-center gap-3">
-            <span className="lg:hidden font-display text-base font-bold tracking-tight text-stone-900 dark:text-zinc-100 whitespace-nowrap shrink-0">
+        <header className="sticky top-0 z-30 h-14 lg:h-16 px-3 sm:px-4 lg:px-8 border-b border-stone-200 dark:border-zinc-800 bg-white/90 dark:bg-zinc-900/90 backdrop-blur-md flex items-center justify-between gap-2 sm:gap-6 lg:gap-8">
+          <div className="min-w-0 flex items-center gap-2 shrink-0">
+            <span className="lg:hidden font-display text-sm sm:text-base font-bold tracking-tight text-stone-900 dark:text-zinc-100 whitespace-nowrap shrink-0">
               Kairo 助理
             </span>
             <span className="hidden lg:inline text-sm font-medium text-stone-500 dark:text-zinc-400 whitespace-nowrap shrink-0">
@@ -2159,20 +2280,38 @@ export default function App() {
             <span>{user && vault.unlocked ? '雲端即時同步中' : user ? '已連線（未解鎖）' : '本機 IndexedDB'}</span>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setIsStickyDrawerOpen((prev) => !prev)}
+              aria-expanded={isStickyDrawerOpen}
+              aria-label="開啟桌面便利貼速覽"
+              className={`inline-flex items-center gap-1 rounded-lg border px-2 sm:px-2.5 py-1.5 text-[11.5px] sm:text-xs font-medium min-h-[36px] sm:min-h-[38px] whitespace-nowrap transition-colors ${
+                desktopPinnedMemos.length > 0
+                  ? 'border-amber-300 dark:border-amber-700/70 bg-amber-50/90 dark:bg-amber-950/30 text-amber-900 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-950/50'
+                  : 'border-stone-200 dark:border-zinc-700 text-stone-700 dark:text-zinc-200 hover:bg-stone-100 dark:hover:bg-zinc-800'
+              }`}
+            >
+              <StickyNote className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+              <span className="hidden sm:inline">桌面便利貼</span>
+              <span className="sm:hidden">便利貼</span>
+              {desktopPinnedMemos.length > 0 && (
+                <span className="font-mono tabular-nums">({desktopPinnedMemos.length})</span>
+              )}
+            </button>
             <button
               type="button"
               onClick={() => setIsMobileLinksOpen((prev) => !prev)}
               aria-expanded={isMobileLinksOpen}
               aria-controls="mobile-quick-links-panel"
               aria-label="開啟常用連結"
-              className={`lg:hidden inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium min-h-[38px] whitespace-nowrap transition-colors ${
+              className={`lg:hidden inline-flex items-center gap-1 rounded-lg border px-2 sm:px-2.5 py-1.5 text-[11.5px] sm:text-xs font-medium min-h-[36px] sm:min-h-[38px] whitespace-nowrap transition-colors ${
                 isMobileLinksOpen
                   ? 'accent-border accent-soft-bg accent-text'
                   : 'border-stone-200 dark:border-zinc-700 text-stone-700 dark:text-zinc-200 hover:bg-stone-100 dark:hover:bg-zinc-800'
               }`}
             >
-              <Link2 className="w-3.5 h-3.5 accent-text" />
+              <Link2 className="w-3.5 h-3.5 accent-text shrink-0" />
               <span>
                 常用連結{activeQuickLinksCount > 0 ? ` (${activeQuickLinksCount})` : ''}
               </span>
@@ -2185,7 +2324,7 @@ export default function App() {
                   showToast('已停止語音播報');
                 }}
                 aria-label="停止語音播報"
-                className="inline-flex items-center gap-1.5 rounded-xl bg-rose-600 text-white px-3 py-2 text-xs font-medium hover:bg-rose-700 min-h-[40px] whitespace-nowrap shrink-0"
+                className="inline-flex items-center gap-1.5 rounded-xl bg-rose-600 text-white px-2.5 sm:px-3 py-2 text-xs font-medium hover:bg-rose-700 min-h-[36px] sm:min-h-[40px] whitespace-nowrap shrink-0"
               >
                 <Square className="w-3.5 h-3.5 fill-current" />
                 <span>停止播報</span>
@@ -2195,7 +2334,7 @@ export default function App() {
                 type="button"
                 onClick={handleSpeakBriefing}
                 aria-label="語音播報今日簡報"
-                className="lg:hidden p-2 rounded-lg text-stone-600 dark:text-zinc-300 hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[40px] min-w-[40px] flex items-center justify-center"
+                className="lg:hidden p-1.5 sm:p-2 rounded-lg text-stone-600 dark:text-zinc-300 hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[36px] min-w-[36px] flex items-center justify-center"
               >
                 <Volume2 className="w-4 h-4 accent-text" />
               </button>
@@ -2206,10 +2345,11 @@ export default function App() {
                 setEditingTask(null);
                 setIsTaskModalOpen(true);
               }}
-              className="inline-flex items-center gap-1.5 rounded-xl accent-bg px-3.5 sm:px-4 py-2 text-xs font-medium min-h-[40px] whitespace-nowrap shrink-0"
+              className="inline-flex items-center gap-1 rounded-xl accent-bg px-2.5 sm:px-4 py-2 text-[11.5px] sm:text-xs font-medium min-h-[36px] sm:min-h-[40px] whitespace-nowrap shrink-0"
             >
-              <Plus className="w-4 h-4" />
-              <span>新增排程</span>
+              <Plus className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+              <span className="hidden sm:inline">新增排程</span>
+              <span className="sm:hidden">排程</span>
             </button>
           </div>
         </header>
@@ -2341,6 +2481,15 @@ export default function App() {
                 setFocusedTaskId(taskId);
                 setActiveTab('plugins');
               }}
+              desktopPinnedMemos={desktopPinnedMemos}
+              floatingMemoIds={floatingMemoIds}
+              onCopyMemo={(memo) => showToast(`已複製「${memo.title}」內容`)}
+              onToggleFloatingMemo={handleToggleFloatingMemo}
+              onUnpinDesktopMemo={(id) => handleToggleDesktopPinMemo(id, false)}
+              onOpenMemoInMemos={(memoId) => {
+                if (memoId) setSelectedMemoId(memoId);
+                setActiveTab('memos');
+              }}
               onSyncGovNow={() => {
                 syncGovNow();
                 showToast('正在更新行政院人事行政總處假日與停班停課狀態');
@@ -2386,9 +2535,16 @@ export default function App() {
           {activeTab === 'memos' && (
             <MemosView
               memos={memos}
+              initialSelectedId={selectedMemoId}
               vaultUnlocked={vault.unlocked}
               cloudConnected={Boolean(user)}
+              floatingMemoIds={floatingMemoIds}
               onSaveMemo={handleSaveMemo}
+              onToggleMemoPin={handleToggleMemoPin}
+              onToggleDesktopPin={handleToggleDesktopPinMemo}
+              onToggleFloatingMemo={handleToggleFloatingMemo}
+              onToggleChecklistItem={handleToggleMemoChecklistItem}
+              onCopyMemo={(memo) => showToast(`已複製「${memo.title}」內容`)}
               onDeleteMemo={handleDeleteMemo}
               onSpeakMemo={(memo) => {
                 speakText(`加密備忘錄：${memo.title}。${memo.content}`, voice, memo.title);
@@ -2626,6 +2782,19 @@ export default function App() {
         </main>
       </div>
 
+      {/* Draggable Floating Sticky Notes (across all workspace tabs) */}
+      <FloatingStickyMemosOverlay
+        memos={floatingMemos}
+        onCloseFloating={handleToggleFloatingMemo}
+        onUnpinDesktop={(id) => handleToggleDesktopPinMemo(id, false)}
+        onEditMemo={(memo) => {
+          setSelectedMemoId(memo.id);
+          setActiveTab('memos');
+        }}
+        onCopyMemo={(memo) => showToast(`已複製「${memo.title}」內容`)}
+        onToggleChecklist={handleToggleMemoChecklistItem}
+      />
+
       {/* Desktop Bottom-Right & Mobile Top-Bar Floating Notifications */}
       <FloatingNotificationStack
         notifications={floatingNotifications}
@@ -2755,6 +2924,85 @@ export default function App() {
               onTogglePin={handleTogglePinQuickLink}
               onDeleteLink={handleDeleteQuickLink}
             />
+          </div>
+        </div>
+      )}
+
+      {isStickyDrawerOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="桌面釘選便利貼速覽"
+          onClick={() => setIsStickyDrawerOpen(false)}
+          className="fixed inset-0 z-50 flex items-start lg:items-center justify-center pt-16 lg:pt-6 px-3 pb-6 bg-black/45 backdrop-blur-xs"
+        >
+          <div
+            data-testid="sticky-drawer-dialog"
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md lg:max-w-lg rounded-2xl border border-stone-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 sm:p-5 shadow-2xl max-h-[calc(100vh-5.5rem)] lg:max-h-[85vh] overflow-y-auto space-y-3"
+          >
+            <div className="flex items-center justify-between pb-2.5 border-b border-stone-200 dark:border-zinc-800">
+              <div className="flex items-center gap-2">
+                <StickyNote className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                <div>
+                  <h2 className="text-sm font-semibold text-stone-900 dark:text-zinc-100">
+                    桌面釘選便利貼 ({desktopPinnedMemos.length})
+                  </h2>
+                  <p className="text-[11px] text-stone-500 dark:text-zinc-400">
+                    隨時查看已釘選的郵局時間、商家電話等常用筆記
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsStickyDrawerOpen(false)}
+                aria-label="關閉桌面便利貼視窗"
+                className="p-2 rounded-lg text-stone-500 hover:bg-stone-100 dark:hover:bg-zinc-800 min-h-[38px] min-w-[38px] flex items-center justify-center shrink-0"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {desktopPinnedMemos.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-stone-200 dark:border-zinc-800 bg-stone-50/70 dark:bg-zinc-950/40 p-5 text-center space-y-3">
+                <p className="text-xs text-stone-600 dark:text-zinc-300 leading-relaxed">
+                  目前尚未釘選任何桌面便利貼，前往「加密備忘錄」右側即可將常用筆記釘選至此。
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsStickyDrawerOpen(false);
+                    setActiveTab('memos');
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-xl accent-bg px-4 py-2 text-xs font-medium min-h-[38px]"
+                >
+                  <span>前往設定釘選備忘錄</span>
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                {desktopPinnedMemos.map((memo) => (
+                  <StickyMemoCard
+                    key={memo.id}
+                    memo={memo}
+                    isFloating={floatingMemoIds.includes(memo.id)}
+                    onCopy={(m) => showToast(`已複製「${m.title}」內容`)}
+                    onSpeak={(m) => {
+                      speakText(`加密備忘錄：${m.title}。${m.content}`, voice, m.title);
+                      showToast(`正在朗讀備忘錄「${m.title}」`);
+                    }}
+                    onToggleFloating={handleToggleFloatingMemo}
+                    onUnpinDesktop={(id) => handleToggleDesktopPinMemo(id, false)}
+                    onToggleChecklist={handleToggleMemoChecklistItem}
+                    onEdit={(m) => {
+                      setSelectedMemoId(m.id);
+                      setIsStickyDrawerOpen(false);
+                      setActiveTab('memos');
+                    }}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
